@@ -41,3 +41,42 @@ def test_resolve_auth_raises_without_credentials(monkeypatch):
         monkeypatch.delenv(var, raising=False)
     with pytest.raises(RuntimeError, match="credentials"):
         resolve_auth(env_path="/nonexistent")
+
+
+from pydantic import ValidationError
+
+from extraction import (Reading, RecordExtraction, FIELD_NAMES,
+                        build_prompt, estimate_cost)
+
+
+def test_illegible_requires_empty_value():
+    assert Reading(value="", confidence="illegible").value == ""
+    with pytest.raises(ValidationError):
+        Reading(value="guess", confidence="illegible")
+
+
+def test_record_schema_roundtrip():
+    payload = {name: {"value": "", "confidence": "high"} for name in FIELD_NAMES}
+    payload["patient_name"] = {"value": "Aromo K.", "confidence": "medium"}
+    payload["row_notes"] = "second treatment line crossed out"
+    rec = RecordExtraction.model_validate(payload)
+    dumped = rec.model_dump()
+    assert dumped["patient_name"]["value"] == "Aromo K."
+    assert dumped["row_notes"].startswith("second")
+    assert len(FIELD_NAMES) == 35
+
+
+def test_build_prompt_mentions_layout_and_context():
+    p = build_prompt(3, context="Center: Kameno, Year: 2026")
+    assert "record 3" in p.lower() or "record #3" in p.lower()
+    assert "header" in p.lower()
+    assert "Kameno" in p
+    assert "illegible" in p.lower()
+    assert "Kameno" not in build_prompt(1)
+
+
+def test_estimate_cost():
+    # 1M in + 1M out at flash-lite rates = 0.25 + 1.50
+    assert estimate_cost("gemini-3.5-flash-lite", 1_000_000, 1_000_000) == pytest.approx(1.75)
+    assert estimate_cost("gemini-3.7-flash", 2_000_000, 0) == pytest.approx(1.50)
+    assert estimate_cost("unknown-model", 5, 5) == 0.0

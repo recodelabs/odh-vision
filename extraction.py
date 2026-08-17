@@ -74,3 +74,117 @@ def make_client():
         return genai.Client(api_key=auth["api_key"])
     return genai.Client(vertexai=True, project=auth["project"],
                         location=auth["location"])
+
+
+# ─── Record schema ───────────────────────────────────────────────────────────
+
+Confidence = Literal["high", "medium", "low", "illegible"]
+
+
+class Reading(BaseModel):
+    """One transcribed cell: verbatim value + confidence. Illegible ⇒ empty."""
+    value: str = ""
+    confidence: Confidence = "high"
+
+    @model_validator(mode="after")
+    def _illegible_is_empty(self):
+        if self.confidence == "illegible" and self.value != "":
+            raise ValueError("illegible readings must have an empty value")
+        return self
+
+
+class RecordExtraction(BaseModel):
+    """One patient record (3 sub-rows) transcribed from a strip, form order."""
+    record_no: Reading
+    day: Reading
+    month: Reading
+    time_hh: Reading
+    time_mm: Reading
+    am_pm: Reading              # "AM" | "PM" | ""
+    voucher_na: Reading         # NA checkbox: "Y" | ""
+    voucher_color: Reading
+    voucher_id: Reading
+    patient_name: Reading
+    village: Reading
+    village_code: Reading
+    first_time_odh: Reading     # "Y" | "N" | ""
+    first_voucher_use: Reading  # "Y" | "N" | ""
+    sex: Reading                # "M" | "F" | ""
+    hh_owns_phone: Reading      # "Y" | "N" | ""
+    hh_owns_toilet: Reading     # "Y" | "N" | ""
+    last_care: Reading          # code 1-5
+    group_appt: Reading         # "Y" | ""
+    age_yrs: Reading
+    hoh_education: Reading
+    tests: Reading
+    result_pn: Reading          # "P" | "N" | ""
+    malaria: Reading            # Mal checkbox: "Y" | ""
+    sev_malaria: Reading        # Sev mal checkbox: "Y" | ""
+    weight_kg: Reading
+    diagnosis: Reading
+    art_dose: Reading           # ArT dose # boxes: "1" | "2" | "3" | ""
+    treatment_line1: Reading
+    treatment_line2: Reading
+    treatment_line3: Reading
+    tab_no: Reading
+    full_cost: Reading
+    balance: Reading
+    cost_after_discount: Reading
+    row_notes: str = ""
+
+
+FIELD_NAMES = [n for n, f in RecordExtraction.model_fields.items()
+               if f.annotation is Reading]
+
+
+# ─── Prompt ──────────────────────────────────────────────────────────────────
+
+PROMPT_TEMPLATE = """\
+You are transcribing ONE patient record from a handwritten Ugandan health\
+-facility OPD register. The image is a horizontal strip: the PRINTED COLUMN \
+HEADER BAND is stitched on top, and below it is record #{record_index} of the \
+page — exactly one record spanning 3 physical sub-rows.
+
+Column layout, left to right (use the printed header band to locate each):
+No. (record number, left margin) | Row ID | Day/HH/AM | Month/MM/PM | \
+voucher (NA checkbox, color, ID) | Name / Village / Village code | 1st time \
+in ODH (Y/N) + Last care code | 1st voucher use (Y/N) + Group appt. | Sex \
+(M/F) + Age (yrs) | HH owns ≥1 phone (Y/N) | HH owns ≥1 toilet (Y/N) + HoH \
+education | Tests | Result (P/N) | Malaria checkboxes (Mal, Sev mal) + \
+Weight (kg) | Diagnosis | ArT dose # (1/2/3 boxes) | Treatment (up to 3 \
+handwritten lines) | Tab # | costs (Full cost / Balance / Cost after \
+discount, top to bottom).
+
+Rules:
+- Transcribe VERBATIM: keep abbreviations, dose notation, and spelling \
+exactly as written. Do not normalize or expand.
+- Checkboxes: a marked box (tick/X/scribble) = its printed label ("Y", "N", \
+"M", "F", "P"...). Unmarked = "". If both marks or ambiguous, pick the \
+clearer one and lower the confidence.
+- Confidence per field: "high" = certain; "medium" = probably right; \
+"low" = a guess you can defend; "illegible" = unreadable — then value MUST \
+be "" (never guess an illegible cell).
+- Empty cells: value "" with confidence "high".
+- Treatment lines map top sub-row → treatment_line1, middle → \
+treatment_line2, bottom → treatment_line3; leave unused lines "".
+- Costs: digits only where possible (e.g. 26000).
+- Anything anomalous (crossed-out text, merged rows, arrows, marginalia) \
+goes in row_notes.
+{context_block}\
+Return ONLY the JSON object matching the provided schema."""
+
+
+def build_prompt(record_index: int, context: str = "") -> str:
+    context_block = f"Page context: {context}\n" if context else ""
+    return PROMPT_TEMPLATE.format(record_index=record_index,
+                                  context_block=context_block)
+
+
+# ─── Cost accounting ─────────────────────────────────────────────────────────
+
+def estimate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
+    """USD cost at standard-tier rates; 0.0 for models not in PRICING."""
+    if model not in PRICING:
+        return 0.0
+    in_rate, out_rate = PRICING[model]
+    return (input_tokens * in_rate + output_tokens * out_rate) / 1_000_000
