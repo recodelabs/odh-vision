@@ -286,6 +286,8 @@ def extract_page(client, model, stem, segments_dir=SEGMENTS_DIR,
 
     skipped = 0
     done = 0
+    run_in = 0
+    run_out = 0
     for entry in manifest["records"]:
         key = str(entry["index"])
         if key in page["records"] and not force:
@@ -299,6 +301,8 @@ def extract_page(client, model, stem, segments_dir=SEGMENTS_DIR,
                                    thinking_budget=thinking_budget,
                                    sleep=sleep)
         page["records"][key] = {"fields": rec.model_dump(), "usage": usage}
+        run_in += usage.get("input_tokens", 0)
+        run_out += usage.get("output_tokens", 0)
         done += 1
         _totalize(page, model)
         _atomic_write_json(out_path, page)     # crash-safe after every record
@@ -309,6 +313,8 @@ def extract_page(client, model, stem, segments_dir=SEGMENTS_DIR,
 
     result = dict(page)
     result["skipped_existing"] = skipped
+    result["extracted_this_run"] = done
+    result["usage_this_run"] = {"input_tokens": run_in, "output_tokens": run_out}
     return result
 
 

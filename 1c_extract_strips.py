@@ -99,7 +99,7 @@ def main(argv=None):
         return 0
 
     client = make_client()
-    tin = tout = new = skipped = errors = 0
+    tin = tout = new = skipped = errors = refused = 0
     remaining = args.limit
     for stem in stems:
         if remaining is not None and remaining <= 0:
@@ -114,21 +114,21 @@ def main(argv=None):
             print(f"  {stem}: ERROR {err}")
             continue
         if "refused" in r:
+            refused += 1
             print(f"  {stem}: refused ({r['refused']})")
             continue
-        n_new = len(r["records"]) - r["skipped_existing"] \
-            if not args.force else len(r["records"])
+        n_new = r["extracted_this_run"]
         if remaining is not None:
             remaining -= n_new
         new += n_new
         skipped += r["skipped_existing"]
-        tin += r["totals"].get("input_tokens", 0)
-        tout += r["totals"].get("output_tokens", 0)
+        tin += r["usage_this_run"]["input_tokens"]
+        tout += r["usage_this_run"]["output_tokens"]
         print(f"  {stem}: {n_new} extracted, {r['skipped_existing']} skipped")
 
     cost = estimate_cost(args.model, tin, tout)
     print(f"\n[{args.model}] {new} strips extracted, {skipped} skipped, "
-          f"{errors} errors | {tin} in / {tout} out tokens | est ${cost:.4f}")
+          f"{refused} refused, {errors} errors | {tin} in / {tout} out tokens | est ${cost:.4f}")
     return 1 if errors else 0
 
 

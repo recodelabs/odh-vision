@@ -26,3 +26,67 @@ def test_dry_run_counts_and_estimates(tmp_path, capsys):
     assert "5 strips" in outtxt          # only the ok page counts
     assert "refused" in outtxt.lower() or "needs_review" in outtxt.lower()
     assert "$" in outtxt                 # cost estimate printed
+
+
+def test_real_run_with_accounting_and_limit(tmp_path, capsys, monkeypatch):
+    """Real-run test: monkeypatches extract_page and make_client; validates per-run accounting."""
+    _make_segments(tmp_path, "reg_p1", n=3)
+    _make_segments(tmp_path, "reg_p2", n=2)
+    cli = importlib.import_module("1c_extract_strips")
+
+    # Mock client (not used, but required by main())
+    class MockClient:
+        pass
+
+    # Track calls to extract_page
+    extract_calls = []
+
+    def fake_extract_page(client, model, stem, **kwargs):
+        """Mock that returns cumulative-looking records but small extracted_this_run/usage_this_run."""
+        extract_calls.append(stem)
+        # Simulate that we extracted only 1 record per call, but return cumulative
+        # records to match the task description (simulating merge behavior)
+        if stem == "reg_p1":
+            return {
+                "stem": stem,
+                "model": model,
+                "records": {"1": {}, "2": {}},  # cumulative: 2 records
+                "skipped_existing": 0,
+                "extracted_this_run": 1,  # but only 1 extracted this run
+                "usage_this_run": {"input_tokens": 1000, "output_tokens": 500},
+                "totals": {"input_tokens": 2000, "output_tokens": 1000},
+            }
+        elif stem == "reg_p2":
+            return {
+                "stem": stem,
+                "model": model,
+                "records": {"1": {}},  # cumulative: 1 record
+                "skipped_existing": 0,
+                "extracted_this_run": 1,  # only 1 extracted this run
+                "usage_this_run": {"input_tokens": 1000, "output_tokens": 500},
+                "totals": {"input_tokens": 1000, "output_tokens": 500},
+            }
+
+    def fake_make_client():
+        return MockClient()
+
+    monkeypatch.setattr(cli, "extract_page", fake_extract_page)
+    monkeypatch.setattr(cli, "make_client", fake_make_client)
+
+    # Run with --limit 2 (should extract from both stems but stop early)
+    rc = cli.main(["--all", "--limit", "2",
+                   "--segments-dir", str(tmp_path / "segments"),
+                   "--out", str(tmp_path / "ex")])
+    outtxt = capsys.readouterr().out
+
+    # Should process both stems (2 calls total)
+    assert len(extract_calls) == 2
+    assert "reg_p1" in extract_calls
+    assert "reg_p2" in extract_calls
+
+    # Summary should report per-run extracted numbers (1 + 1 = 2), not cumulative
+    assert "2 strips extracted" in outtxt
+    assert "2000 in" in outtxt  # 1000 + 1000 per-run tokens
+    assert "1000 out" in outtxt  # 500 + 500 per-run tokens
+    assert "$" in outtxt  # cost estimate
+    assert rc == 0

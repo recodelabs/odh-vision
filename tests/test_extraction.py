@@ -300,3 +300,43 @@ def test_extract_page_empty_records_writes_output(tmp_path):
     assert saved["records"] == {}
     assert saved["totals"]["input_tokens"] == 0
     assert result["skipped_existing"] == 0
+
+
+def test_extract_page_resume_returns_zero_extracted_this_run(tmp_path):
+    """Resume run (all records exist) returns extracted_this_run == 0 and usage_this_run of zeros."""
+    seg = _make_segments(tmp_path, n=3)
+    out = str(tmp_path / "ex")
+    # First extraction: all 3 records
+    c1 = StubClient([_Resp(_valid_record()) for _ in range(3)])
+    r1 = ex.extract_page(c1, "m", "reg_p1", segments_dir=seg, out_base=out,
+                         sleep=lambda s: None)
+    assert r1["extracted_this_run"] == 3
+    assert r1["usage_this_run"]["input_tokens"] > 0
+    # Resume: no new records
+    c2 = StubClient([])
+    r2 = ex.extract_page(c2, "m", "reg_p1", segments_dir=seg, out_base=out,
+                         sleep=lambda s: None)
+    assert r2["extracted_this_run"] == 0
+    assert r2["usage_this_run"]["input_tokens"] == 0
+    assert r2["usage_this_run"]["output_tokens"] == 0
+
+
+def test_extract_page_force_with_limit_tracks_extracted_correctly(tmp_path):
+    """Force run with limit=1 extracts 1 while file holds all 3."""
+    seg = _make_segments(tmp_path, n=3)
+    out = str(tmp_path / "ex")
+    # First extraction: all 3 records
+    c1 = StubClient([_Resp(_valid_record()) for _ in range(3)])
+    ex.extract_page(c1, "m", "reg_p1", segments_dir=seg, out_base=out,
+                    sleep=lambda s: None)
+    path = os.path.join(out, "m", "reg_p1.json")
+    saved1 = json.load(open(path))
+    assert len(saved1["records"]) == 3
+    # Force re-extract with limit=1
+    c2 = StubClient([_Resp(_valid_record())])
+    r2 = ex.extract_page(c2, "m", "reg_p1", segments_dir=seg, out_base=out,
+                         force=True, limit=1, sleep=lambda s: None)
+    assert r2["extracted_this_run"] == 1
+    # File still has all 3 records (record 1 was refreshed, 2 and 3 from prior)
+    saved2 = json.load(open(path))
+    assert len(saved2["records"]) == 3
