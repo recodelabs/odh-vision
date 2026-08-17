@@ -1,9 +1,11 @@
 import numpy as np
 import cv2
 
+from segmentation import HEADER_FRAC   # keep synthetic fixture in sync with
+                                        # the production constant it exercises
+
 PAGE_W, PAGE_H = 1200, 850            # synthetic "photo" size
 TABLE = (60, 40, 1140, 810)           # left, top, right, bottom of drawn table
-HEADER_FRAC = 0.13
 N_RECORDS = 5
 
 def draw_table(n_records=N_RECORDS):

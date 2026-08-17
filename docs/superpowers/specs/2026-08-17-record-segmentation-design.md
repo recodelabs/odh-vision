@@ -128,3 +128,68 @@ Prints a per-page summary line and a final count of `ok` vs `needs_review`. `--c
 ### Dependencies
 
 `requirements.txt`: `opencv-python-headless`, `numpy`, `Pillow`, `openpyxl`, `pytest`. Repo initialized as git with `.gitignore` excluding PDFs, `ODHFILESCANS*` workbook files, `_output/`, `_segments/` (PHI-bearing artifacts must not be committed).
+
+## Integration results (2026-08-17)
+
+Task 8 ran the full pipeline against all 23 pages of the real sample PDF
+(`20260319_053700_KAM_Stlhb.pdf`). **Final result: 0/23 pages `status: ok`, 23/23
+`needs_review`.** This is a deliberate reversion to the safe baseline after tuning
+was found to introduce a silent-failure regression — see below. Full trajectory,
+evidence, and recommended values for follow-up work are in
+`.superpowers/sdd/2026-08-17-record-segmentation/task-8-report.md`; summary:
+
+**Grid/boundary detection is fixable by constant tuning, and was verified working.**
+`HEADER_FRAC=0.13` (the shipped value) doesn't match the real printed table —
+directly measuring `detect_h_lines` output on two independently-confirmed
+correctly-oriented pages puts the true header/body boundary at `y≈248` of 1400
+(`HEADER_FRAC≈0.177`), not `y=182`. Because `group_records` anchors all other
+boundaries off the header snap, this single miscalibration cascaded into snap
+failures on nearly every boundary on every page. Correcting it (`HEADER_FRAC=0.177`,
+`SNAP_TOL=0.02→0.03`) fixed detection on both of the two known-correctly-oriented
+sample pages (p17, p23).
+
+**The blocking defect is orientation, not grid detection, and is out of scope for
+constant tuning.** `ensure_upright`'s heuristic (compare "small marks" ink density in
+the top vs. bottom 15% of the page, assuming the printed header is denser) is
+essentially uncorrelated with true orientation on this document type: real record
+rows are handwriting-dense while the printed header is comparatively sparse — the
+opposite of the synthetic test fixture's assumption (dense header, empty body rows).
+Verified directly (not inferred) on 5 pages by reconstructing the pipeline's raw
+pre-decision and post-decision images: p1 was correctly oriented raw and got
+wrongly flipped; p10 and p2 were upside-down raw and were not flipped (wrongly);
+p17 and p23 were upside-down raw and were correctly flipped. The correct-orientation
+outcome does not correlate consistently with the sign of (top ink − bottom ink)
+across these pages, so no single threshold or comparison-direction change fixes it
+without breaking the pinned synthetic unit test (which encodes the opposite density
+convention on purpose) — this needs a different orientation signal entirely
+(structural change), consistent with the brief's own anticipated "known judgment
+call" about heavy handwriting defeating the density heuristic.
+
+**Discovered and avoided a dangerous coupling.** Applying the `HEADER_FRAC`/`SNAP_TOL`
+fix alone (without also fixing orientation) was tried and measured: it raised the
+`ok` count to 6/23, but visual inspection of all 6 "ok" pages at full resolution
+showed 4 of them (p11, p13, p15, p19) were **upside-down despite `status: "ok"`** —
+the 5-record grid is regularly spaced enough that accurate ideal boundaries snap to
+real lines even in a flipped page. This silently violates this spec's Failure
+behavior invariant ("bad segmentation must never silently feed the OCR step"). The
+unmodified baseline never has this problem, because its own header miscalibration
+causes broad snap failures regardless of orientation — an accidental safety net that
+a naive fix would have removed. **`segmentation.py` was therefore reverted to its
+original constant values** (zero diff from before Task 8); only `tests/conftest.py`
+keeps a hygiene fix (imports `HEADER_FRAC` from `segmentation` instead of
+independently hardcoding the same value, so the synthetic fixture can no longer
+silently drift out of sync with the production constant — the gap that hid this
+issue from the unit suite in the first place).
+
+**Recommendation for follow-up:** implement a real orientation signal (not ink
+density) — the brief's suggested fallback, the printed page-number box, is a
+plausible candidate but note it's duplicated at both top-right and bottom-right of
+the physical page regardless of orientation, so box *position* alone won't
+disambiguate; its content/orientation would need to be read. Land that fix together
+with `HEADER_FRAC≈0.177` / `SNAP_TOL≈0.03` (both re-verified above), and add a
+synthetic test fixture with realistic (non-empty, dense) body rows so this class of
+bug is caught automatically in the future. Until then, `status: "ok"` should not be
+trusted as a sufficient orientation guarantee for this document type, which is why
+the pipeline currently ships in its maximally conservative (0 ok) state.
+
+Unit suite: `python -m pytest -v` → 16/16 passed, unchanged.
