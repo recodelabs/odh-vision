@@ -41,6 +41,39 @@ def test_continuation_conflict_same_recno_different_name():
     assert continuation_conflict(prim, odd) == "ambiguous-continuation"
 
 
+def test_is_continuation_true_on_name_match_despite_recno_mismatch():
+    # Margin record_no digits are proven unreliable; a fuzzy name match
+    # (ratio >= 0.75) must classify as a continuation even though the
+    # record_no values differ and are both present.
+    prim = F(**{**PRIMARY, "record_no": "307"})
+    cont = F(record_no="3067", patient_name="Aciro Rose",
+             treatment_line1="T. X")
+    assert is_continuation(prim, cont)
+
+
+def test_continuation_conflict_none_when_name_matches_despite_recno_match():
+    # Same record_no AND matching name is a normal continuation, not a
+    # conflict.
+    prim = F(**PRIMARY)
+    same = F(record_no="304", patient_name="Aciro Rose",
+             treatment_line1="T. X")
+    assert continuation_conflict(prim, same) is None
+
+
+def test_classify_strips_recno_mismatch_name_match_merges_with_warning():
+    records = {
+        "1": {"fields": F(record_no="307", patient_name="Aciro Rose",
+                          sex="M", diagnosis="PID", full_cost="26000")},
+        "2": {"fields": F(record_no="3067", patient_name="Aciro Rose",
+                          treatment_line1="T. X")},
+    }
+    kinds = classify_strips(records)
+    assert kinds == [
+        (1, "primary", None),
+        (2, "continuation", "recno-mismatch-name-match"),
+    ]
+
+
 def test_classify_strips_primary_cont_empty():
     records = {
         "1": {"fields": F(**PRIMARY)},
@@ -86,6 +119,19 @@ def test_merge_flags_unresolvable_conflict():
     assert m["fields"]["full_cost"]["value"] == "26000"   # primary kept
     assert m["review"] is True
     assert m["warnings"][0]["field"] == "full_cost"
+
+
+def test_merge_keeps_primary_recno_silently_on_mismatch():
+    # record_no is known-unreliable; a differing continuation record_no
+    # must not be flagged as a merge conflict or force review — that
+    # signal is surfaced separately by classify_strips/reconcile_page.
+    prim = F(**{**PRIMARY, "record_no": "307"})
+    cont = F(record_no="3067", patient_name="Aciro Rose",
+             treatment_line1="T. X")
+    m = merge_patient([(1, prim), (2, cont)])
+    assert m["fields"]["record_no"]["value"] == "307"
+    assert m["review"] is False
+    assert not any(w.get("field") == "record_no" for w in m["warnings"])
 
 
 def test_validators_shape():

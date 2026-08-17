@@ -7,6 +7,7 @@ re-read, which is injected (extract_fn) so tests never touch a network.
 See docs/superpowers/specs/2026-08-17-reconciliation-design.md.
 """
 
+import difflib
 import json
 import os
 import re
@@ -23,11 +24,34 @@ RECONCILER_VERSION = "1"
 CLIP_MIN_EMPTY = 5
 CLIP_FIELDS = ["patient_name", "sex", "first_time_odh", "hh_owns_phone",
                "hh_owns_toilet", "result_pn", "diagnosis", "full_cost"]
+# A real register record virtually always has "sex" checked (and, in
+# practice, the other three checkbox-cluster fields too). If ALL of these
+# are empty regardless of the rest of the strip, that is itself a clip
+# signature even when CLIP_MIN_EMPTY isn't reached (e.g. patient_name /
+# result_pn / diagnosis / full_cost were captured lower on the strip,
+# below the clip line) — see live validation 2026-08-17, record 314.
+CHECKBOX_CLUSTER_FIELDS = ["sex", "first_time_odh", "hh_owns_phone",
+                           "hh_owns_toilet"]
 CONTENT_FIELDS = ["treatment_line1", "treatment_line2", "treatment_line3",
                   "tab_no", "full_cost", "balance", "cost_after_discount",
                   "diagnosis"]
 IDENTITY_FIELDS = ["sex", "age_yrs", "village"]
 TREATMENT_FIELDS = ("treatment_line1", "treatment_line2", "treatment_line3")
+
+# Repairs may only fill fields that are structurally safe to re-derive from
+# a wider crop of the SAME record: identity/header fields and the
+# checkbox/name cluster. Treatment lines, tab_no, balance and
+# cost_after_discount are explicitly excluded — live validation 2026-08-17
+# found repair re-reads fabricating/duplicating treatment-line content and
+# leaking values from neighboring strips into these fields.
+REPAIRABLE_FIELDS = CLIP_FIELDS + ["record_no", "village", "village_code",
+                                   "age_yrs", "day", "month", "time_hh",
+                                   "time_mm", "am_pm"]
+
+# Margin record_no digits are proven unreliable (clipped, misread
+# inconsistently across a single patient's own strips — live validation
+# 2026-08-17). Name similarity is the primary continuation signal.
+NAME_MATCH_THRESHOLD = 0.75
 
 REPAIR_NOTE = ("REPAIR RE-READ: this crop extends slightly beyond one "
                "record. Exactly one complete patient record lies between "
@@ -75,15 +99,29 @@ VALIDATORS = {
 
 # ─── Classification ──────────────────────────────────────────────────────────
 
+def _name_similarity(a, b):
+    return difflib.SequenceMatcher(None, a, b).ratio()
+
+
 def is_continuation(primary_fields, cur):
-    """True if *cur* looks like an overflow block of *primary_fields*."""
-    rn_p, rn_c = _v(primary_fields, "record_no"), _v(cur, "record_no")
-    if rn_c and rn_p and rn_c != rn_p:
-        return False
+    """True if *cur* looks like an overflow block of *primary_fields*.
+
+    Name is the primary identity signal when both sides have one: a fuzzy
+    match (ratio >= NAME_MATCH_THRESHOLD) is enough, and in that case a
+    differing record_no no longer blocks classification — margin
+    record_no digits are proven unreliable, misread inconsistently even
+    across a single patient's own strips. When either side lacks a name,
+    fall back to the record_no equality check.
+    """
     n_p, n_c = _norm(_v(primary_fields, "patient_name")), \
         _norm(_v(cur, "patient_name"))
-    if n_c and n_p and n_c != n_p:
-        return False
+    if n_p and n_c:
+        if _name_similarity(n_p, n_c) < NAME_MATCH_THRESHOLD:
+            return False
+    else:
+        rn_p, rn_c = _v(primary_fields, "record_no"), _v(cur, "record_no")
+        if rn_c and rn_p and rn_c != rn_p:
+            return False
     for fld in IDENTITY_FIELDS:
         a, b = _norm(_v(primary_fields, fld)), _norm(_v(cur, fld))
         if a and b and a != b:
@@ -92,17 +130,31 @@ def is_continuation(primary_fields, cur):
 
 
 def continuation_conflict(primary_fields, cur):
-    """Reason string when *cur* half-matches the primary (needs review)."""
+    """Reason string when *cur* half-matches the primary (needs review).
+
+    Applies only when record_no matches AND the names are dissimilar
+    (ratio < NAME_MATCH_THRESHOLD) — a same-record_no strip whose name
+    also matches (or fuzzy-matches) is a normal continuation, not a
+    conflict.
+    """
     rn_p, rn_c = _v(primary_fields, "record_no"), _v(cur, "record_no")
     n_p, n_c = _norm(_v(primary_fields, "patient_name")), \
         _norm(_v(cur, "patient_name"))
-    if rn_c and rn_p and rn_c == rn_p and n_c and n_p and n_c != n_p:
-        return "ambiguous-continuation"
+    if rn_c and rn_p and rn_c == rn_p and n_c and n_p:
+        if _name_similarity(n_p, n_c) < NAME_MATCH_THRESHOLD:
+            return "ambiguous-continuation"
     return None
 
 
 def classify_strips(records):
-    """[(key, "primary"|"continuation"|"empty", review_reason|None)]."""
+    """[(key, "primary"|"continuation"|"empty", reason|None)].
+
+    For continuations, *reason* is normally None, but may be
+    "recno-mismatch-name-match" when the strip was classified as a
+    continuation on name similarity despite a differing record_no — a
+    warning-worthy fact for the caller to surface, not a review-forcing
+    one (record_no is known-unreliable; the name match is trusted).
+    """
     out = []
     current_primary = None
     for key in sorted(records, key=int):
@@ -117,7 +169,12 @@ def classify_strips(records):
                 current_primary = fields
                 continue
             if is_continuation(current_primary, fields):
-                out.append((int(key), "continuation", None))
+                cont_reason = None
+                rn_p = _v(current_primary, "record_no")
+                rn_c = _v(fields, "record_no")
+                if rn_p and rn_c and rn_p != rn_c:
+                    cont_reason = "recno-mismatch-name-match"
+                out.append((int(key), "continuation", cont_reason))
                 continue
         out.append((int(key), "primary", None))
         current_primary = fields
@@ -151,6 +208,13 @@ def merge_patient(strips):
                 continue
             if _norm(pv) == _norm(cv):
                 continue
+            if n == "record_no":
+                # Known-unreliable field (margins clipped/misread across a
+                # patient's own strips); mismatch is surfaced separately as
+                # a "recno-mismatch-name-match" warning by reconcile_page,
+                # not as a blocking merge conflict here. Keep the primary's
+                # reading silently.
+                continue
             valid = VALIDATORS.get(n)
             if valid:
                 pok, cok = valid(pv), valid(cv)
@@ -180,7 +244,18 @@ def merge_patient(strips):
 # ─── Boundary repair ─────────────────────────────────────────────────────────
 
 def has_clip_signature(fields):
-    """True when so many core fields are empty the strip was likely clipped."""
+    """True when so many core fields are empty the strip was likely clipped.
+
+    Two independent triggers:
+    - the whole checkbox cluster (sex, first_time_odh, hh_owns_phone,
+      hh_owns_toilet) is empty — a real register record virtually always
+      has at least "sex" checked, so this is itself a clip signature
+      regardless of how many other CLIP_FIELDS were captured elsewhere on
+      the strip (e.g. below the clip line);
+    - OR the pre-existing >= CLIP_MIN_EMPTY rule over all CLIP_FIELDS.
+    """
+    if all(not _v(fields, f) for f in CHECKBOX_CLUSTER_FIELDS):
+        return True
     return sum(1 for f in CLIP_FIELDS if not _v(fields, f)) >= CLIP_MIN_EMPTY
 
 
@@ -215,6 +290,8 @@ def repair_fields(fields, rec_entry, header_bottom, full_png, tmp_dir,
     new = rec.model_dump() if hasattr(rec, "model_dump") else rec
     repaired = []
     for n in FIELD_NAMES:
+        if n not in REPAIRABLE_FIELDS:
+            continue
         if not _v(fields, n) and _v(new, n):
             fields[n] = dict(new[n])
             repaired.append(n)
@@ -306,7 +383,7 @@ def reconcile_page(stem, model, segments_dir=SEGMENTS_DIR,
                 groups.append(group)
             group = [(key, reason)]
         else:
-            group.append((key, None))
+            group.append((key, reason))
     if group:
         groups.append(group)
 
@@ -324,6 +401,14 @@ def reconcile_page(stem, model, segments_dir=SEGMENTS_DIR,
             merged["review"] = True
             merged["warnings"].append(
                 {"reason": primary_reason, "strip": primary_key})
+        # Continuation reasons (e.g. "recno-mismatch-name-match") are
+        # informational: surfaced in warnings but never force review on
+        # their own — record_no is known-unreliable, and the strip was
+        # already trusted as a continuation on name similarity.
+        for cont_key, cont_reason in grp[1:]:
+            if cont_reason:
+                merged["warnings"].append(
+                    {"reason": cont_reason, "strip": cont_key})
         merged["repaired_fields"] = rep
         merged["seq"] = seq
         merged["record_no"] = merged["fields"]["record_no"]["value"]

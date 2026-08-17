@@ -66,6 +66,28 @@ def test_reconcile_page_merges_and_writes(tmp_path):
     assert len(saved["patients"]) == 2
 
 
+def test_reconcile_page_recno_mismatch_name_match_merges_no_review(tmp_path):
+    # Two strips, same true patient, matching names but a misread
+    # record_no ("307" vs "3067") — must merge into ONE patient with a
+    # recno-mismatch-name-match warning, and review must stay False.
+    ex = [F(record_no="307", patient_name="Aciro Rose", sex="M",
+            diagnosis="PID", treatment_line1="T1", full_cost="26000",
+            first_time_odh="N", hh_owns_phone="Y", hh_owns_toilet="Y",
+            result_pn="P"),
+          F(record_no="3067", patient_name="Aciro Rose",
+            treatment_line1="T2", tab_no="10")]
+    seg, exd = _page(tmp_path, extraction=ex)
+    r = reconcile_page("reg_p1", "m", segments_dir=seg, extractions_dir=exd,
+                       out_base=str(tmp_path / "rec"))
+    assert len(r["patients"]) == 1
+    p = r["patients"][0]
+    assert p["review"] is False
+    assert p["record_no"] == "307"
+    assert any(w.get("reason") == "recno-mismatch-name-match"
+              for w in p["warnings"])
+    assert [t["value"] for t in p["fields"]["treatments"]] == ["T1", "T2"]
+
+
 def test_reconcile_page_clip_without_repair_flags_review(tmp_path):
     clipped = F(village="Bulaga", village_code="2", day="16", month="3")
     seg, exd = _page(tmp_path, extraction=[clipped])

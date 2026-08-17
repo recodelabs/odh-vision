@@ -23,6 +23,25 @@ def test_clip_signature():
     assert not has_clip_signature(normal)       # only 2 empties
 
 
+def test_clip_signature_checkbox_cluster_all_empty():
+    # Record 314 (live validation 2026-08-17): the clip line falls exactly
+    # between the checkbox cluster and the rest of the row, so only 4/8
+    # CLIP_FIELDS are empty (one short of CLIP_MIN_EMPTY) but ALL of
+    # sex/first_time_odh/hh_owns_phone/hh_owns_toilet are empty — that
+    # alone must trigger repair.
+    row51 = F(patient_name="Moses", result_pn="P", diagnosis="malaria",
+              full_cost="3500")
+    assert has_clip_signature(row51)
+
+
+def test_clip_signature_checkbox_cluster_partial_not_triggered():
+    # Only some of the checkbox cluster is empty, and CLIP_MIN_EMPTY isn't
+    # reached either — should not trigger.
+    partial = F(patient_name="X", sex="M", first_time_odh="Y",
+                hh_owns_phone="Y", diagnosis="Malaria", full_cost="3500")
+    assert not has_clip_signature(partial)      # hh_owns_toilet empty only
+
+
 def test_build_repair_crop_geometry(tmp_path):
     H, W, header_bottom = 700, 1000, 100
     page = np.full((H, W), 200, np.uint8)
@@ -78,3 +97,35 @@ def test_repair_fills_only_empty_fields(tmp_path):
     assert usage["input_tokens"] == 5000
     assert REPAIR_NOTE in calls[0][2] and "ctx" in calls[0][2]
     assert calls[0][1] == 5
+
+
+def test_repair_never_fills_non_allowlisted_fields(tmp_path):
+    # The observed fabrication vector (live validation 2026-08-17): a
+    # re-read offering a treatment_line value (or tab_no/balance/
+    # cost_after_discount) for an empty slot must NOT be filled, even
+    # though it's empty in the original strip. Only REPAIRABLE_FIELDS may
+    # be filled by a repair re-read.
+    H, W = 700, 1000
+    cv2.imwrite(str(tmp_path / "full.png"), np.full((H, W), 200, np.uint8))
+    fields = F(village="Bulaga")   # treatment_line1/tab_no/balance/
+                                  # cost_after_discount all empty
+    reread = F(patient_name="Okwir Moses", sex="M",
+               treatment_line1="T. Pcm 1g tds x 3/7", tab_no="10",
+               balance="5000", cost_after_discount="2000")
+
+    class Rec:
+        def model_dump(self):
+            return reread
+
+    def extract_fn(image_path, record_index, context):
+        return Rec(), {"input_tokens": 1000, "output_tokens": 100,
+                       "latency_s": 1.0}
+
+    entry = {"index": 1, "y0": 400, "y1": 520}
+    repaired, _ = repair_fields(fields, entry, 100, str(tmp_path / "full.png"),
+                                str(tmp_path), extract_fn)
+    assert set(repaired) == {"patient_name", "sex"}
+    assert fields["treatment_line1"]["value"] == ""
+    assert fields["tab_no"]["value"] == ""
+    assert fields["balance"]["value"] == ""
+    assert fields["cost_after_discount"]["value"] == ""
