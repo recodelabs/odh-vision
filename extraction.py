@@ -146,7 +146,7 @@ HEADER BAND is stitched on top, and below it is record #{record_index} of the \
 page — exactly one record spanning 3 physical sub-rows.
 
 Column layout, left to right (use the printed header band to locate each):
-No. (record number, left margin) | Row ID | Day/HH/AM | Month/MM/PM | \
+No. (record number, left margin) | Row ID (pre-printed sub-row numbers — do not transcribe) | Day/HH/AM | Month/MM/PM | \
 voucher (NA checkbox, color, ID) | Name / Village / Village code | 1st time \
 in ODH (Y/N) + Last care code | 1st voucher use (Y/N) + Group appt. | Sex \
 (M/F) + Age (yrs) | HH owns ≥1 phone (Y/N) | HH owns ≥1 toilet (Y/N) + HoH \

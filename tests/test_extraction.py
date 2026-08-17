@@ -2,8 +2,10 @@ import json
 import os
 
 import pytest
+from pydantic import ValidationError
 
-from extraction import load_env, resolve_auth
+from extraction import (load_env, resolve_auth, Reading, RecordExtraction,
+                        FIELD_NAMES, build_prompt, estimate_cost)
 
 
 def test_load_env_sets_without_overwriting(tmp_path, monkeypatch):
@@ -41,12 +43,6 @@ def test_resolve_auth_raises_without_credentials(monkeypatch):
         monkeypatch.delenv(var, raising=False)
     with pytest.raises(RuntimeError, match="credentials"):
         resolve_auth(env_path="/nonexistent")
-
-
-from pydantic import ValidationError
-
-from extraction import (Reading, RecordExtraction, FIELD_NAMES,
-                        build_prompt, estimate_cost)
 
 
 def test_illegible_requires_empty_value():
