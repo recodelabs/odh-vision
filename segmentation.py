@@ -162,3 +162,83 @@ def group_records(h_lines, table_h, n_records=N_RECORDS,
     ys = [header_bottom] + [snap(b) for b in bounds[1:-1]] + [body_bottom]
     records = [(ys[i], ys[i + 1]) for i in range(n_records)]
     return header_bottom, records, warnings
+
+
+def emit_record_strips(rect_gray, header_bottom, records, out_dir, stem):
+    """Write one PNG per record: printed header band + the record's rows."""
+    header = rect_gray[0:header_bottom]
+    entries = []
+    for i, (y0, y1) in enumerate(records, start=1):
+        strip = np.vstack([header, rect_gray[y0:y1]])
+        name = f"{stem}_rec{i}.png"
+        cv2.imwrite(os.path.join(out_dir, name), strip)
+        entries.append({"index": i, "y0": int(y0), "y1": int(y1),
+                        "strip": name})
+    return entries
+
+
+def save_debug_overlay(rect_gray, header_bottom, records, col_x, path):
+    vis = cv2.cvtColor(rect_gray, cv2.COLOR_GRAY2BGR)
+    w = vis.shape[1]
+    cv2.line(vis, (0, header_bottom), (w, header_bottom), (255, 0, 0), 3)
+    for y0, y1 in records:
+        cv2.rectangle(vis, (2, y0), (w - 3, y1), (0, 0, 255), 2)
+    for x in col_x:
+        cv2.line(vis, (x, 0), (x, vis.shape[0]), (0, 180, 0), 1)
+    cv2.imwrite(path, vis)
+
+
+def _write_manifest(manifest, out_dir):
+    with open(os.path.join(out_dir, manifest["stem"] + ".json"), "w") as f:
+        json.dump(manifest, f, indent=2)
+    return manifest
+
+
+def segment_page(image_path, out_dir):
+    """Rectify, clean, and segment one rendered page image.
+
+    Writes strips + debug overlay + manifest into out_dir. On any failure
+    the page gets status "needs_review" and NO strips are emitted.
+    """
+    os.makedirs(out_dir, exist_ok=True)
+    stem = os.path.splitext(os.path.basename(image_path))[0]
+    manifest = {"source_image": image_path, "stem": stem,
+                "status": "needs_review",
+                "canonical_size": [CANON_W, CANON_H],
+                "header_band": None, "records": [], "col_x": [],
+                "warnings": []}
+
+    img = cv2.imread(image_path)
+    if img is None:
+        manifest["warnings"].append("could not read image")
+        return _write_manifest(manifest, out_dir)
+    if img.shape[0] > img.shape[1]:            # portrait → landscape
+        img = cv2.rotate(img, cv2.ROTATE_90_CLOCKWISE)
+
+    quad = find_table_quad(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY))
+    if quad is None:
+        manifest["warnings"].append("table border not found")
+        cv2.imwrite(os.path.join(out_dir, f"{stem}_debug.jpg"), img)
+        return _write_manifest(manifest, out_dir)
+
+    rect_gray = clean_page(rectify_page(img, quad))
+    rect_gray, flipped = ensure_upright(rect_gray)
+    if flipped:
+        manifest["warnings"].append("rotated 180 (header was at bottom)")
+
+    h_lines = detect_h_lines(rect_gray)
+    col_x = detect_v_lines(rect_gray)
+    header_bottom, records, grp_warnings = group_records(h_lines, CANON_H)
+    manifest["warnings"] += grp_warnings
+    manifest["header_band"] = [0, int(header_bottom)]
+    manifest["col_x"] = [int(x) for x in col_x]
+
+    if not any("using ideal" in w for w in grp_warnings):
+        manifest["status"] = "ok"
+        manifest["records"] = emit_record_strips(
+            rect_gray, header_bottom, records, out_dir, stem)
+        cv2.imwrite(os.path.join(out_dir, f"{stem}_full.png"), rect_gray)
+
+    save_debug_overlay(rect_gray, header_bottom, records, col_x,
+                       os.path.join(out_dir, f"{stem}_debug.jpg"))
+    return _write_manifest(manifest, out_dir)
