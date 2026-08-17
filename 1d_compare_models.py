@@ -26,6 +26,7 @@ def norm(s: str) -> str:
 
 def compare_extractions(dir_a, dir_b):
     per_field = {n: {"agree": 0, "total": 0} for n in FIELD_NAMES}
+    by_confidence = {}
     disagreements = []
     n_records = both_empty = 0
 
@@ -47,8 +48,13 @@ def compare_extractions(dir_a, dir_b):
                     both_empty += 1
                     continue
                 per_field[name]["total"] += 1
+                ca, cb = fa[name]["confidence"], fb[name]["confidence"]
+                pair = by_confidence.setdefault(f"{ca}|{cb}",
+                                                {"agree": 0, "total": 0})
+                pair["total"] += 1
                 if norm(va) == norm(vb):
                     per_field[name]["agree"] += 1
+                    pair["agree"] += 1
                 else:
                     disagreements.append({
                         "stem": stem, "record": key, "field": name,
@@ -58,11 +64,15 @@ def compare_extractions(dir_a, dir_b):
     for stats in per_field.values():
         stats["rate"] = (round(stats["agree"] / stats["total"], 3)
                          if stats["total"] else 1.0)
+    for stats in by_confidence.values():
+        stats["rate"] = (round(stats["agree"] / stats["total"], 3)
+                         if stats["total"] else 1.0)
     compared = sum(s["total"] for s in per_field.values())
     agreed = sum(s["agree"] for s in per_field.values())
     return {"n_records": n_records, "n_compared_fields": compared,
             "agreement_rate": round(agreed / compared, 3) if compared else 1.0,
             "both_empty": both_empty, "per_field": per_field,
+            "by_confidence": by_confidence,
             "disagreements": disagreements}
 
 
@@ -94,6 +104,10 @@ def main(argv=None):
     for name, s in ranked:
         if s["total"]:
             print(f"{name:<22} {s['agree']:>6} {s['total']:>6} {s['rate']:>6.1%}")
+
+    print(f"\n{'conf pair (a|b)':<22} {'agree':>6} {'total':>6} {'rate':>7}")
+    for pair, s in sorted(result["by_confidence"].items()):
+        print(f"{pair:<22} {s['agree']:>6} {s['total']:>6} {s['rate']:>6.1%}")
 
     out_csv = args.out_csv or os.path.join(args.base, f"compare_{a}__{b}.csv")
     write_csv(result["disagreements"], out_csv)

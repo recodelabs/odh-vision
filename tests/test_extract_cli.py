@@ -90,3 +90,37 @@ def test_real_run_with_accounting_and_limit(tmp_path, capsys, monkeypatch):
     assert "1000 out" in outtxt  # 500 + 500 per-run tokens
     assert "$" in outtxt  # cost estimate
     assert rc == 0
+
+
+def test_strip_errors_counted_printed_and_fail_exit_code(tmp_path, capsys, monkeypatch):
+    """Per-strip errors (contained inside extract_page, not raised) must be
+    tallied into the CLI's error count, printed per page, and cause exit 1."""
+    _make_segments(tmp_path, "reg_p1", n=2)
+    cli = importlib.import_module("1c_extract_strips")
+
+    class MockClient:
+        pass
+
+    def fake_extract_page(client, model, stem, **kwargs):
+        return {
+            "stem": stem,
+            "model": model,
+            "records": {"1": {}},
+            "skipped_existing": 0,
+            "extracted_this_run": 1,
+            "usage_this_run": {"input_tokens": 100, "output_tokens": 50},
+            "totals": {"input_tokens": 100, "output_tokens": 50},
+            "strip_errors": [{"index": 2, "error": "400 bad request"}],
+        }
+
+    monkeypatch.setattr(cli, "extract_page", fake_extract_page)
+    monkeypatch.setattr(cli, "make_client", lambda: MockClient())
+
+    rc = cli.main(["reg_p1", "--segments-dir", str(tmp_path / "segments"),
+                   "--out", str(tmp_path / "ex")])
+    outtxt = capsys.readouterr().out
+
+    assert "strip 2" in outtxt
+    assert "400 bad request" in outtxt
+    assert "1 errors" in outtxt
+    assert rc == 1

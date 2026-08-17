@@ -169,6 +169,50 @@ def test_extract_strip_retries_on_502(strip_file):
     assert naps == [1]                         # 2**0
 
 
+def test_is_retryable_word_boundary_no_false_positive_substring():
+    """A message containing '15000' (not a standalone retryable code) must
+    not be matched via substring containment on '500'."""
+    err = RuntimeError("quota exceeded: capacity 15000 requests")
+    assert ex._is_retryable(err) is False
+
+
+def test_is_retryable_numeric_code_attribute():
+    class CodedError(Exception):
+        code = 503
+    assert ex._is_retryable(CodedError("service unavailable")) is True
+
+
+def test_is_retryable_numeric_code_attribute_non_retryable():
+    class CodedError(Exception):
+        code = 400
+    assert ex._is_retryable(CodedError("bad request")) is False
+
+
+def test_is_retryable_502_string_still_matches():
+    assert ex._is_retryable(RuntimeError("502 Bad Gateway")) is True
+
+
+def test_extract_strip_15000_in_message_not_retried(strip_file):
+    """End-to-end: a non-retryable error whose message merely contains the
+    substring '15000' must raise immediately, not be retried as a 500."""
+    client = StubClient([RuntimeError("quota exceeded: capacity 15000 requests")])
+    with pytest.raises(RuntimeError, match="15000"):
+        ex.extract_strip(client, "m", strip_file, 1, sleep=lambda s: None)
+    assert len(client.models.calls) == 1
+
+
+def test_extract_strip_retries_on_numeric_code_attribute(strip_file):
+    """End-to-end: an exception exposing .code == 503 is retried and succeeds."""
+    class CodedError(Exception):
+        code = 503
+
+    client = StubClient([CodedError("service unavailable"), _Resp(_valid_record())])
+    naps = []
+    rec, _ = ex.extract_strip(client, "m", strip_file, 1, sleep=naps.append)
+    assert isinstance(rec, RecordExtraction)
+    assert naps == [1]                         # 2**0
+
+
 def test_extract_strip_thinking_config_drop_does_not_consume_attempt(strip_file):
     """Thinking config rejection should retry without consuming an attempt slot."""
     client = StubClient([
@@ -264,8 +308,10 @@ def test_extract_page_limit_caps_new_extractions(tmp_path):
     assert len(saved["records"]) == 1
 
 
-def test_extract_page_force_crash_preserves_prior_records(tmp_path):
-    """Force re-extraction with crash mid-way: output still contains all old records."""
+def test_extract_page_force_failure_preserves_prior_record_and_continues(tmp_path):
+    """Force re-extraction with a non-retryable failure on one strip: that
+    strip's prior value is preserved (not overwritten, stays re-tryable on
+    resume) and later strips in the page still get processed."""
     seg = _make_segments(tmp_path, n=3)
     out = str(tmp_path / "ex")
     # First extraction: all 3 records succeed
@@ -275,17 +321,54 @@ def test_extract_page_force_crash_preserves_prior_records(tmp_path):
     path = os.path.join(out, "m", "reg_p1.json")
     saved1 = json.load(open(path))
     assert len(saved1["records"]) == 3
-    # Force re-extraction with crash on 2nd record
-    c2 = StubClient([_Resp(_valid_record()), ValueError("400 bad request")])
-    with pytest.raises(ValueError):
-        ex.extract_page(c2, "m", "reg_p1", segments_dir=seg, out_base=out,
-                        force=True, sleep=lambda s: None)
-    # File must still exist with all 3 record keys (1 refreshed, 2 from prior)
+    # Force re-extraction; 2nd strip fails non-retryably, 1st and 3rd succeed.
+    c2 = StubClient([_Resp(_valid_record()), ValueError("400 bad request"),
+                     _Resp(_valid_record())])
+    r2 = ex.extract_page(c2, "m", "reg_p1", segments_dir=seg, out_base=out,
+                         force=True, sleep=lambda s: None)
+    # Failure is contained: reported transiently, not raised, and page keeps going.
+    assert r2["strip_errors"] == [{"index": 2, "error": "400 bad request"}]
+    assert r2["extracted_this_run"] == 2       # strips 1 and 3
+    # File still has all 3 record keys (1 and 3 refreshed, 2 kept from prior).
     saved2 = json.load(open(path))
     assert set(saved2["records"].keys()) == {"1", "2", "3"}
     # JSON is valid (no partial writes or truncation)
     assert "totals" in saved2
     assert saved2["stem"] == "reg_p1"
+
+
+def test_extract_page_strip_errors_default_empty_on_success(tmp_path):
+    seg = _make_segments(tmp_path)
+    out = str(tmp_path / "ex")
+    client = StubClient([_Resp(_valid_record()) for _ in range(3)])
+    result = ex.extract_page(client, "m", "reg_p1", segments_dir=seg,
+                             out_base=out, sleep=lambda s: None)
+    assert result["strip_errors"] == []
+    # Transient key, never persisted to disk.
+    saved = json.load(open(os.path.join(out, "m", "reg_p1.json")))
+    assert "strip_errors" not in saved
+
+
+def test_extract_page_failed_strip_stays_retryable_on_resume(tmp_path):
+    """A strip that failed is absent from page["records"], so a resume run
+    (without force) retries it instead of skipping it forever."""
+    seg = _make_segments(tmp_path, n=2)
+    out = str(tmp_path / "ex")
+    c1 = StubClient([ValueError("400 bad request"), _Resp(_valid_record())])
+    r1 = ex.extract_page(c1, "m", "reg_p1", segments_dir=seg, out_base=out,
+                         sleep=lambda s: None)
+    assert r1["strip_errors"] == [{"index": 1, "error": "400 bad request"}]
+    saved1 = json.load(open(os.path.join(out, "m", "reg_p1.json")))
+    assert set(saved1["records"].keys()) == {"2"}
+    # Resume: strip 1 (previously failed) is retried, strip 2 is skipped.
+    c2 = StubClient([_Resp(_valid_record())])
+    r2 = ex.extract_page(c2, "m", "reg_p1", segments_dir=seg, out_base=out,
+                         sleep=lambda s: None)
+    assert r2["strip_errors"] == []
+    assert r2["extracted_this_run"] == 1
+    assert r2["skipped_existing"] == 1
+    saved2 = json.load(open(os.path.join(out, "m", "reg_p1.json")))
+    assert set(saved2["records"].keys()) == {"1", "2"}
 
 
 def test_extract_page_empty_records_writes_output(tmp_path):

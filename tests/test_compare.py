@@ -58,3 +58,23 @@ def test_compare_and_csv(tmp_path):
     cmp_mod.write_csv(result["disagreements"], str(out_csv))
     rows = list(csv.DictReader(open(out_csv)))
     assert len(rows) == 1 and rows[0]["field"] == "diagnosis"
+
+
+def test_compare_by_confidence(tmp_path):
+    """Agreement broken down by (a_confidence, b_confidence) pair."""
+    _write_extraction(tmp_path, "m1", "p1", {
+        "1": {"patient_name": ("Aromo Ketty", "high"),   # a=high b=medium, agree
+              "diagnosis": ("Malaria", "high")},        # a=high b=low, disagree
+        "2": {"patient_name": ("Akello", "medium")},    # a=medium b=high, agree
+    })
+    _write_extraction(tmp_path, "m2", "p1", {
+        "1": {"patient_name": ("aromo  ketty", "medium"),
+              "diagnosis": ("PID", "low")},
+        "2": {"patient_name": ("Akello", "high")},
+    })
+    result = cmp_mod.compare_extractions(str(tmp_path / "m1"),
+                                         str(tmp_path / "m2"))
+    by_conf = result["by_confidence"]
+    assert by_conf["high|medium"] == {"agree": 1, "total": 1, "rate": 1.0}
+    assert by_conf["high|low"] == {"agree": 0, "total": 1, "rate": 0.0}
+    assert by_conf["medium|high"] == {"agree": 1, "total": 1, "rate": 1.0}

@@ -8,6 +8,7 @@ See docs/superpowers/specs/2026-08-17-gemini-extraction-design.md.
 
 import json
 import os
+import re
 import time
 from typing import Literal, Optional
 
@@ -192,13 +193,20 @@ def estimate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
 
 # ─── Per-strip extraction ────────────────────────────────────────────────────
 
-_RETRYABLE_MARKERS = ("429", "500", "501", "502", "503", "504", "RESOURCE_EXHAUSTED",
-                      "UNAVAILABLE", "DEADLINE_EXCEEDED")
+_RETRYABLE_CODES = {429, 500, 501, 502, 503, 504}
+# Word-bounded so a message containing e.g. "15000" doesn't false-match "500".
+_RETRYABLE_CODE_RE = re.compile(r"\b(429|50[0-4])\b")
+_RETRYABLE_NAMED_MARKERS = ("RESOURCE_EXHAUSTED", "UNAVAILABLE", "DEADLINE_EXCEEDED")
 
 
 def _is_retryable(err: Exception) -> bool:
+    # Prefer a numeric status code attribute when the exception carries one.
+    code = getattr(err, "code", None)
+    if code is not None:
+        return code in _RETRYABLE_CODES
     msg = str(err)
-    return any(m in msg for m in _RETRYABLE_MARKERS)
+    return bool(_RETRYABLE_CODE_RE.search(msg)) or any(
+        m in msg for m in _RETRYABLE_NAMED_MARKERS)
 
 
 def extract_strip(client, model, strip_path, record_index, context="",
@@ -288,6 +296,7 @@ def extract_page(client, model, stem, segments_dir=SEGMENTS_DIR,
     done = 0
     run_in = 0
     run_out = 0
+    strip_errors = []
     for entry in manifest["records"]:
         key = str(entry["index"])
         if key in page["records"] and not force:
@@ -296,10 +305,16 @@ def extract_page(client, model, stem, segments_dir=SEGMENTS_DIR,
         if limit is not None and done >= limit:
             break
         strip_path = os.path.join(segments_dir, stem, entry["strip"])
-        rec, usage = extract_strip(client, model, strip_path, entry["index"],
-                                   context=context,
-                                   thinking_budget=thinking_budget,
-                                   sleep=sleep)
+        try:
+            rec, usage = extract_strip(client, model, strip_path, entry["index"],
+                                       context=context,
+                                       thinking_budget=thinking_budget,
+                                       sleep=sleep)
+        except Exception as err:
+            # Leave any prior record for this key untouched so it stays
+            # re-tryable on resume (never persist errors into page["records"]).
+            strip_errors.append({"index": entry["index"], "error": str(err)})
+            continue
         page["records"][key] = {"fields": rec.model_dump(), "usage": usage}
         run_in += usage.get("input_tokens", 0)
         run_out += usage.get("output_tokens", 0)
@@ -315,6 +330,7 @@ def extract_page(client, model, stem, segments_dir=SEGMENTS_DIR,
     result["skipped_existing"] = skipped
     result["extracted_this_run"] = done
     result["usage_this_run"] = {"input_tokens": run_in, "output_tokens": run_out}
+    result["strip_errors"] = strip_errors
     return result
 
 

@@ -22,8 +22,10 @@ from config import SEGMENTS_DIR, EXTRACTIONS_DIR
 from extraction import (DEFAULT_MODEL, estimate_cost, extract_page,
                         make_client)
 
-# Planning figures for --dry-run (tokens per strip round trip).
-EST_IN_PER_STRIP, EST_OUT_PER_STRIP = 1000, 500
+# Tokens per strip round trip, for --dry-run cost estimation. Measured from
+# live results (2026-08-17): avg 5419 in, 593-996 out per strip — see
+# docs/superpowers/specs/2026-08-17-gemini-extraction-design.md "Live results".
+EST_IN_PER_STRIP, EST_OUT_PER_STRIP = 5400, 1000
 
 
 def discover_stems(segments_dir):
@@ -124,7 +126,11 @@ def main(argv=None):
         skipped += r["skipped_existing"]
         tin += r["usage_this_run"]["input_tokens"]
         tout += r["usage_this_run"]["output_tokens"]
+        strip_errs = r.get("strip_errors", [])
+        errors += len(strip_errs)
         print(f"  {stem}: {n_new} extracted, {r['skipped_existing']} skipped")
+        for se in strip_errs:
+            print(f"    strip {se['index']}: ERROR {se['error']}")
 
     cost = estimate_cost(args.model, tin, tout)
     print(f"\n[{args.model}] {new} strips extracted, {skipped} skipped, "
