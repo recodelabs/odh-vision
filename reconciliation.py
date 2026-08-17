@@ -175,3 +175,47 @@ def merge_patient(strips):
             "resolved_conflicts": resolved,
             "warnings": warnings,
             "review": review}
+
+
+# ─── Boundary repair ─────────────────────────────────────────────────────────
+
+def has_clip_signature(fields):
+    """True when so many core fields are empty the strip was likely clipped."""
+    return sum(1 for f in CLIP_FIELDS if not _v(fields, f)) >= CLIP_MIN_EMPTY
+
+
+def build_repair_crop(full_page_path, header_bottom, y0, y1, out_path):
+    """Expanded crop from the rectified page: one sub-row of slack each side,
+    header band stitched, red lines at the EXPANDED bounds. Returns
+    (out_path, top_slack, bottom_slack)."""
+    img = cv2.imread(full_page_path, cv2.IMREAD_GRAYSCALE)
+    H = img.shape[0]
+    subrow = max(1, (y1 - y0) // SUBROWS_PER_RECORD)
+    top = max(header_bottom, y0 - subrow)
+    bottom = min(H, y1 + subrow)
+    strip = np.vstack([img[0:header_bottom], img[top:bottom]])
+    vis = cv2.cvtColor(strip, cv2.COLOR_GRAY2BGR)
+    w = vis.shape[1]
+    cv2.line(vis, (0, header_bottom), (w, header_bottom), (0, 0, 255), 2)
+    cv2.line(vis, (0, vis.shape[0] - 2), (w, vis.shape[0] - 2),
+             (0, 0, 255), 2)
+    cv2.imwrite(out_path, vis)
+    return out_path, y0 - top, bottom - y1
+
+
+def repair_fields(fields, rec_entry, header_bottom, full_png, tmp_dir,
+                  extract_fn, context=""):
+    """One targeted re-read; fill ONLY empty fields. Returns
+    (repaired field names, usage)."""
+    crop = os.path.join(tmp_dir, f"repair_rec{rec_entry['index']}.png")
+    build_repair_crop(full_png, header_bottom,
+                      rec_entry["y0"], rec_entry["y1"], crop)
+    full_context = f"{context}. {REPAIR_NOTE}" if context else REPAIR_NOTE
+    rec, usage = extract_fn(crop, rec_entry["index"], full_context)
+    new = rec.model_dump() if hasattr(rec, "model_dump") else rec
+    repaired = []
+    for n in FIELD_NAMES:
+        if not _v(fields, n) and _v(new, n):
+            fields[n] = dict(new[n])
+            repaired.append(n)
+    return repaired, usage
