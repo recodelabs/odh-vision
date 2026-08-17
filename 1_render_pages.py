@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-1_render_pages.py  —  Convert PDF pages to JPEG images.
+1_render_pages.py  —  Convert PDF pages to PNG images.
 
 Usage:
     python 1_render_pages.py <pdf_path> [page_start] [page_end]
@@ -8,9 +8,9 @@ Usage:
     python 1_render_pages.py "path/to/file.pdf" 3 7
 
 Steps:
-    1. Runs pdftoppm to render each page as JPEG at configured DPI.
-    2. Auto-rotates portrait pages to landscape (registers are landscape).
-    3. Saves to OUTPUT_DIR as  <stem>_p<N>.jpg
+    1. Runs pdftoppm to render each page as PNG at configured DPI.
+    2. Orientation is handled downstream by 1b_segment_records.py.
+    3. Saves to OUTPUT_DIR as  <stem>_p<N>.png
 
 Requires: poppler-utils (pdftoppm, pdfinfo), Pillow.
 """
@@ -25,7 +25,7 @@ def render_pdf_pages(pdf_path: str,
                      page_end: int = None,
                      dpi: int = RENDER_DPI,
                      out_dir: str = OUTPUT_DIR) -> list:
-    """Render pages to JPEG. Returns list of output file paths."""
+    """Render pages to PNG. Returns list of output file paths."""
 
     if not os.path.isfile(pdf_path):
         raise FileNotFoundError(f"PDF not found: {pdf_path}")
@@ -47,27 +47,21 @@ def render_pdf_pages(pdf_path: str,
     for p in range(page_start, page_end + 1):
         prefix = os.path.join(out_dir, f"{stem}_p{p}")
         subprocess.run(
-            ["pdftoppm", "-jpeg", "-r", str(dpi),
+            ["pdftoppm", "-png", "-r", str(dpi),
              "-f", str(p), "-l", str(p),
              pdf_path, prefix],
             check=True)
 
-        # pdftoppm adds a suffix like -01.jpg — rename cleanly
-        matches = sorted(glob.glob(f"{prefix}*.jpg"))
+        matches = sorted(glob.glob(f"{prefix}*.png"))
         if not matches:
             print(f"  WARNING: no output for page {p}", file=sys.stderr)
             continue
         raw = matches[0]
-        final = f"{prefix}.jpg"
+        final = f"{prefix}.png"
         if raw != final:
             os.rename(raw, final)
 
-        # Auto-rotate portrait → landscape
         im = Image.open(final)
-        if im.height > im.width:
-            im = im.rotate(90, expand=True)
-            im.save(final)
-
         print(f"  page {p}: {im.size[0]}x{im.size[1]}  → {final}")
         output_files.append(final)
 

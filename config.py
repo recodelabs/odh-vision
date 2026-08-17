@@ -67,6 +67,9 @@ OPTIMIZED_DIR = os.path.join(PROJECT_ROOT, "ODHFILESCANS_optimized")
 OUTPUT_DIR = os.path.join(PROJECT_ROOT, "_output")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
+SEGMENTS_DIR = os.path.join(PROJECT_ROOT, "_segments")
+os.makedirs(SEGMENTS_DIR, exist_ok=True)
+
 
 # ─── Master-spreadsheet column headers (in column order) ─────────────────────
 HEADERS = [
@@ -124,7 +127,7 @@ RESERVED_SHEETS = {"Legend", "Progress"}
 
 
 # ─── Render settings ─────────────────────────────────────────────────────────
-RENDER_DPI  = 200
+RENDER_DPI  = 300
 TOTAL_PDFS  = 312             # total source PDFs in the project
 
 
