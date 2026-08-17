@@ -188,3 +188,77 @@ def test_extract_strip_thinking_config_drop_does_not_consume_attempt(strip_file)
     # attempt 2: 503 (sleep 4, increment to 3)
     # attempt 3: success
     assert naps == [1, 2, 4]
+
+
+# ─── Per-page extraction tests (stub client, offline) ────────────────────────
+
+
+def _make_segments(tmp_path, stem="reg_p1", status="ok", n=3):
+    d = tmp_path / "segments" / stem
+    d.mkdir(parents=True)
+    records = []
+    for i in range(1, n + 1):
+        name = f"{stem}_rec{i}.png"
+        (d / name).write_bytes(b"\x89PNG fake")
+        records.append({"index": i, "y0": 0, "y1": 10, "strip": name})
+    manifest = {"stem": stem, "status": status, "records": records,
+                "warnings": [], "header_band": [0, 5], "col_x": [],
+                "canonical_size": [2000, 1400], "source_image": "x.png"}
+    (d / f"{stem}.json").write_text(json.dumps(manifest))
+    return str(tmp_path / "segments")
+
+
+def test_extract_page_writes_output(tmp_path):
+    seg = _make_segments(tmp_path)
+    out = str(tmp_path / "ex")
+    client = StubClient([_Resp(_valid_record()) for _ in range(3)])
+    result = ex.extract_page(client, "gemini-3.5-flash-lite", "reg_p1",
+                             segments_dir=seg, out_base=out, sleep=lambda s: None)
+    path = os.path.join(out, "gemini-3.5-flash-lite", "reg_p1.json")
+    assert os.path.isfile(path)
+    saved = json.load(open(path))
+    assert saved["prompt_version"] == ex.PROMPT_VERSION
+    assert set(saved["records"]) == {"1", "2", "3"}
+    assert saved["records"]["2"]["usage"]["input_tokens"] == 800
+    assert saved["totals"]["input_tokens"] == 2400
+    assert saved["totals"]["est_cost_usd"] == pytest.approx(
+        ex.estimate_cost("gemini-3.5-flash-lite", 2400, 1800))
+    assert result["stem"] == "reg_p1"
+
+
+def test_extract_page_refuses_needs_review(tmp_path):
+    seg = _make_segments(tmp_path, status="needs_review")
+    out = str(tmp_path / "ex")
+    client = StubClient([])
+    result = ex.extract_page(client, "m", "reg_p1", segments_dir=seg, out_base=out)
+    assert result["refused"] == "needs_review"
+    assert not os.path.exists(os.path.join(out, "m", "reg_p1.json"))
+    assert client.models.calls == []
+
+
+def test_extract_page_resumes_and_forces(tmp_path):
+    seg = _make_segments(tmp_path)
+    out = str(tmp_path / "ex")
+    c1 = StubClient([_Resp(_valid_record()) for _ in range(3)])
+    ex.extract_page(c1, "m", "reg_p1", segments_dir=seg, out_base=out,
+                    sleep=lambda s: None)
+    # resume: nothing new to do
+    c2 = StubClient([])
+    r2 = ex.extract_page(c2, "m", "reg_p1", segments_dir=seg, out_base=out,
+                         sleep=lambda s: None)
+    assert c2.models.calls == [] and r2["skipped_existing"] == 3
+    # force: re-extracts all
+    c3 = StubClient([_Resp(_valid_record()) for _ in range(3)])
+    r3 = ex.extract_page(c3, "m", "reg_p1", segments_dir=seg, out_base=out,
+                         force=True, sleep=lambda s: None)
+    assert len(c3.models.calls) == 3 and r3["skipped_existing"] == 0
+
+
+def test_extract_page_limit_caps_new_extractions(tmp_path):
+    seg = _make_segments(tmp_path)
+    out = str(tmp_path / "ex")
+    client = StubClient([_Resp(_valid_record())])
+    ex.extract_page(client, "m", "reg_p1", segments_dir=seg, out_base=out,
+                    limit=1, sleep=lambda s: None)
+    saved = json.load(open(os.path.join(out, "m", "reg_p1.json")))
+    assert len(saved["records"]) == 1

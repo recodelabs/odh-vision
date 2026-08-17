@@ -253,3 +253,67 @@ def extract_strip(client, model, strip_path, record_index, context="",
     raise RuntimeError(
         f"extract_strip({os.path.basename(strip_path)}) failed after "
         f"{max_attempts} attempts: {last_err}")
+
+
+# ─── Per-page orchestration ──────────────────────────────────────────────────
+
+def _atomic_write_json(path, payload):
+    tmp = path + ".wtmp"
+    with open(tmp, "w") as f:
+        json.dump(payload, f, indent=2)
+    os.replace(tmp, path)
+
+
+def extract_page(client, model, stem, segments_dir=SEGMENTS_DIR,
+                 out_base=EXTRACTIONS_DIR, context="", force=False,
+                 limit=None, thinking_budget=0, sleep=time.sleep):
+    """Extract every strip of one segmented page. Resume-safe and atomic."""
+    manifest_path = os.path.join(segments_dir, stem, f"{stem}.json")
+    with open(manifest_path) as f:
+        manifest = json.load(f)
+    if manifest.get("status") != "ok":
+        return {"stem": stem, "refused": manifest.get("status", "unknown")}
+
+    out_dir = os.path.join(out_base, model)
+    os.makedirs(out_dir, exist_ok=True)
+    out_path = os.path.join(out_dir, f"{stem}.json")
+
+    page = {"stem": stem, "model": model, "prompt_version": PROMPT_VERSION,
+            "records": {}, "totals": {}}
+    if os.path.isfile(out_path) and not force:
+        with open(out_path) as f:
+            page = json.load(f)
+
+    skipped = 0
+    done = 0
+    for entry in manifest["records"]:
+        key = str(entry["index"])
+        if key in page["records"] and not force:
+            skipped += 1
+            continue
+        if limit is not None and done >= limit:
+            break
+        strip_path = os.path.join(segments_dir, stem, entry["strip"])
+        rec, usage = extract_strip(client, model, strip_path, entry["index"],
+                                   context=context,
+                                   thinking_budget=thinking_budget,
+                                   sleep=sleep)
+        page["records"][key] = {"fields": rec.model_dump(), "usage": usage}
+        done += 1
+        _totalize(page, model)
+        _atomic_write_json(out_path, page)     # crash-safe after every record
+
+    if done == 0 and skipped and not os.path.isfile(out_path):
+        _totalize(page, model)
+        _atomic_write_json(out_path, page)
+
+    result = dict(page)
+    result["skipped_existing"] = skipped
+    return result
+
+
+def _totalize(page, model):
+    tin = sum(r["usage"]["input_tokens"] for r in page["records"].values())
+    tout = sum(r["usage"]["output_tokens"] for r in page["records"].values())
+    page["totals"] = {"input_tokens": tin, "output_tokens": tout,
+                      "est_cost_usd": round(estimate_cost(model, tin, tout), 6)}
