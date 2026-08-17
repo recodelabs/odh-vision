@@ -20,3 +20,6 @@ __pycache__/
 .env
 .gcp-sa.json
 _extractions/
+
+# Reconciliation phase — merged patient records
+_reconciled/

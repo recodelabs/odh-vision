@@ -73,6 +73,9 @@ os.makedirs(SEGMENTS_DIR, exist_ok=True)
 EXTRACTIONS_DIR = os.path.join(PROJECT_ROOT, "_extractions")
 os.makedirs(EXTRACTIONS_DIR, exist_ok=True)
 
+RECONCILED_DIR = os.path.join(PROJECT_ROOT, "_reconciled")
+os.makedirs(RECONCILED_DIR, exist_ok=True)
+
 
 # ─── Master-spreadsheet column headers (in column order) ─────────────────────
 HEADERS = [
