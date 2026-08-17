@@ -23,3 +23,6 @@ _extractions/
 
 # Reconciliation phase — merged patient records
 _reconciled/
+
+# Legacy manual-extraction export — contains patient data, never commit
+all_records.csv
