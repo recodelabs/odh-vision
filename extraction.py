@@ -280,7 +280,7 @@ def extract_page(client, model, stem, segments_dir=SEGMENTS_DIR,
 
     page = {"stem": stem, "model": model, "prompt_version": PROMPT_VERSION,
             "records": {}, "totals": {}}
-    if os.path.isfile(out_path) and not force:
+    if os.path.isfile(out_path):
         with open(out_path) as f:
             page = json.load(f)
 
@@ -303,7 +303,7 @@ def extract_page(client, model, stem, segments_dir=SEGMENTS_DIR,
         _totalize(page, model)
         _atomic_write_json(out_path, page)     # crash-safe after every record
 
-    if done == 0 and skipped and not os.path.isfile(out_path):
+    if not os.path.isfile(out_path):
         _totalize(page, model)
         _atomic_write_json(out_path, page)
 

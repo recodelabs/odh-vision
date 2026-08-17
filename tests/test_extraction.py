@@ -262,3 +262,41 @@ def test_extract_page_limit_caps_new_extractions(tmp_path):
                     limit=1, sleep=lambda s: None)
     saved = json.load(open(os.path.join(out, "m", "reg_p1.json")))
     assert len(saved["records"]) == 1
+
+
+def test_extract_page_force_crash_preserves_prior_records(tmp_path):
+    """Force re-extraction with crash mid-way: output still contains all old records."""
+    seg = _make_segments(tmp_path, n=3)
+    out = str(tmp_path / "ex")
+    # First extraction: all 3 records succeed
+    c1 = StubClient([_Resp(_valid_record()) for _ in range(3)])
+    ex.extract_page(c1, "m", "reg_p1", segments_dir=seg, out_base=out,
+                    sleep=lambda s: None)
+    path = os.path.join(out, "m", "reg_p1.json")
+    saved1 = json.load(open(path))
+    assert len(saved1["records"]) == 3
+    # Force re-extraction with crash on 2nd record
+    c2 = StubClient([_Resp(_valid_record()), ValueError("400 bad request")])
+    with pytest.raises(ValueError):
+        ex.extract_page(c2, "m", "reg_p1", segments_dir=seg, out_base=out,
+                        force=True, sleep=lambda s: None)
+    # File must still exist with all 3 record keys (1 refreshed, 2 from prior)
+    saved2 = json.load(open(path))
+    assert set(saved2["records"].keys()) == {"1", "2", "3"}
+    # JSON is valid (no partial writes or truncation)
+    assert "totals" in saved2
+    assert saved2["stem"] == "reg_p1"
+
+
+def test_extract_page_empty_records_writes_output(tmp_path):
+    """An ok page with no records in manifest still produces an output file."""
+    seg = _make_segments(tmp_path, n=0)  # 0 records
+    out = str(tmp_path / "ex")
+    client = StubClient([])
+    result = ex.extract_page(client, "m", "reg_p1", segments_dir=seg, out_base=out)
+    path = os.path.join(out, "m", "reg_p1.json")
+    assert os.path.isfile(path)
+    saved = json.load(open(path))
+    assert saved["records"] == {}
+    assert saved["totals"]["input_tokens"] == 0
+    assert result["skipped_existing"] == 0
