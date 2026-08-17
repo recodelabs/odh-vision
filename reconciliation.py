@@ -219,3 +219,125 @@ def repair_fields(fields, rec_entry, header_bottom, full_png, tmp_dir,
             fields[n] = dict(new[n])
             repaired.append(n)
     return repaired, usage
+
+
+# ─── Page orchestration ──────────────────────────────────────────────────────
+
+def _check_sequence(record_nos):
+    if not all(rn.isdigit() for rn in record_nos):
+        return "non-numeric"
+    nums = [int(rn) for rn in record_nos]
+    if len(set(nums)) != len(nums):
+        return "duplicate"
+    if any(b - a != 1 for a, b in zip(nums, nums[1:])):
+        return "gap"
+    return "ok"
+
+
+def _atomic_write(path, payload):
+    tmp = path + ".wtmp"
+    with open(tmp, "w") as f:
+        json.dump(payload, f, indent=2)
+    os.replace(tmp, path)
+
+
+def reconcile_page(stem, model, segments_dir=SEGMENTS_DIR,
+                   extractions_dir=EXTRACTIONS_DIR, out_base=RECONCILED_DIR,
+                   extract_fn=None, force=False, context="", tmp_dir=None):
+    """Reconcile one page's strip extractions into patient records."""
+    man_path = os.path.join(segments_dir, stem, f"{stem}.json")
+    with open(man_path) as f:
+        manifest = json.load(f)
+    if manifest.get("status") != "ok":
+        return {"stem": stem, "refused": manifest.get("status", "unknown")}
+    ex_path = os.path.join(extractions_dir, model, f"{stem}.json")
+    if not os.path.isfile(ex_path):
+        return {"stem": stem, "refused": "no-extraction"}
+
+    out_dir = os.path.join(out_base, model)
+    os.makedirs(out_dir, exist_ok=True)
+    out_path = os.path.join(out_dir, f"{stem}.json")
+    if os.path.isfile(out_path) and not force:
+        with open(out_path) as f:
+            page = json.load(f)
+        page["skipped"] = True
+        return page
+
+    with open(ex_path) as f:
+        extraction = json.load(f)
+    records = extraction["records"]
+    man_by_index = {r["index"]: r for r in manifest["records"]}
+    header_bottom = manifest["header_band"][1]
+    full_png = os.path.join(segments_dir, stem, f"{stem}_full.png")
+    tmp_dir = tmp_dir or os.path.join(out_dir, ".repair")
+    os.makedirs(tmp_dir, exist_ok=True)
+
+    repair_usage = {"calls": 0, "input_tokens": 0, "output_tokens": 0}
+    kinds = classify_strips(records)
+
+    # boundary repair pass (primaries only)
+    repaired_by_key = {}
+    for key, kind, _reason in kinds:
+        if kind != "primary":
+            continue
+        fields = records[str(key)]["fields"]
+        if not has_clip_signature(fields):
+            continue
+        if extract_fn is None:
+            repaired_by_key[key] = None          # flag later
+            continue
+        repaired, usage = repair_fields(
+            fields, man_by_index[key], header_bottom, full_png, tmp_dir,
+            extract_fn, context=context)
+        repaired_by_key[key] = repaired
+        repair_usage["calls"] += 1
+        repair_usage["input_tokens"] += usage.get("input_tokens", 0)
+        repair_usage["output_tokens"] += usage.get("output_tokens", 0)
+
+    # group primaries with their continuations, in order
+    patients = []
+    group = []
+    groups = []
+    for key, kind, reason in kinds:
+        if kind == "empty":
+            continue
+        if kind == "primary":
+            if group:
+                groups.append(group)
+            group = [(key, reason)]
+        else:
+            group.append((key, None))
+    if group:
+        groups.append(group)
+
+    for seq, grp in enumerate(groups, start=1):
+        strips = [(k, records[str(k)]["fields"]) for k, _ in grp]
+        merged = merge_patient(strips)
+        primary_key, primary_reason = grp[0]
+        rep = repaired_by_key.get(primary_key, [])
+        if rep is None:
+            merged["review"] = True
+            merged["warnings"].append(
+                {"reason": "clipped-no-repair", "strip": primary_key})
+            rep = []
+        if primary_reason:
+            merged["review"] = True
+            merged["warnings"].append(
+                {"reason": primary_reason, "strip": primary_key})
+        merged["repaired_fields"] = rep
+        merged["seq"] = seq
+        merged["record_no"] = merged["fields"]["record_no"]["value"]
+        patients.append(merged)
+
+    seq_status = _check_sequence(
+        [p["record_no"] for p in patients if p["record_no"]])
+    repair_usage["est_cost_usd"] = round(estimate_cost(
+        model, repair_usage["input_tokens"], repair_usage["output_tokens"]), 6)
+
+    page = {"stem": stem, "model": model,
+            "reconciler_version": RECONCILER_VERSION,
+            "patients": patients,
+            "page_checks": {"record_no_sequence": seq_status, "warnings": []},
+            "repair_usage": repair_usage}
+    _atomic_write(out_path, page)
+    return page
