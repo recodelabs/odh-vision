@@ -24,20 +24,27 @@ def patient(seq, source_strips, treatments=None, tab_nos=None, **over):
 def test_possible_split_recno_edit_distance_one():
     # "307" vs "3067" — one dropped/extra digit (edit distance 1). Live
     # validation 2026-08-17 round 1/2: true patient 304's own two strips
-    # split into record_no "304" and "3067".
+    # split into record_no "304" and "3067". patient_b's checkbox cluster
+    # is fully populated so branch (b) (clip-shaped fragment) cannot also
+    # fire here — this test isolates branch (a) (record_no similarity).
     a = patient(1, [1], record_no="307", patient_name="Aciro Rose",
                treatments=[{"value": "T1", "confidence": "high"}])
     b = patient(2, [2], record_no="3067", patient_name="Aciro Rose",
+               sex="M", first_time_odh="N", hh_owns_phone="Y",
+               hh_owns_toilet="Y",
                treatments=[{"value": "T2", "confidence": "high"}])
     assert possible_split(a, b)
 
 
 def test_possible_split_recno_substring():
     # "31" vs "314" — clipped trailing digits (containment, not edit
-    # distance <= 1 given the length gap).
+    # distance <= 1 given the length gap). patient_b's checkbox cluster is
+    # fully populated so branch (b) cannot also fire — isolates branch (a).
     a = patient(1, [1], record_no="313", patient_name="Aber Susan",
                treatments=[{"value": "T1", "confidence": "high"}])
     b = patient(2, [2], record_no="31", patient_name="Okwir Moses",
+               sex="M", first_time_odh="N", hh_owns_phone="Y",
+               hh_owns_toilet="Y",
                treatments=[{"value": "T2", "confidence": "high"}])
     assert possible_split(a, b)
 
@@ -51,7 +58,7 @@ def test_possible_split_clip_shaped_single_strip_fragment():
     a = patient(1, [1], record_no="304", patient_name="Acire Rosemary",
                sex="M", first_time_odh="N", hh_owns_phone="Y",
                hh_owns_toilet="Y", result_pn="P", diagnosis="PID",
-               full_cost="26000",
+               full_cost="27500",
                treatments=[{"value": "T1", "confidence": "high"}])
     b = patient(2, [2], record_no="9999", patient_name="Adong Florence",
                treatments=[{"value": "T2", "confidence": "high"}])
@@ -62,7 +69,7 @@ def test_possible_split_negative_two_distinct_patients():
     a = patient(1, [1], record_no="304", patient_name="Aciro Rose",
                sex="M", first_time_odh="N", hh_owns_phone="Y",
                hh_owns_toilet="Y", result_pn="P", diagnosis="PID",
-               full_cost="26000",
+               full_cost="27500",
                treatments=[{"value": "T1", "confidence": "high"}])
     b = patient(2, [2, 3], record_no="305", patient_name="Okello Sam",
                sex="M", first_time_odh="N", hh_owns_phone="Y",

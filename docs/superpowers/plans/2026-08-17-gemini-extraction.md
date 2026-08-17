@@ -998,7 +998,7 @@ def _write_extraction(base, model, stem, values):
 
 
 def test_norm():
-    assert cmp_mod.norm("  Aromo   KETTY") == "aromo ketty"
+    assert cmp_mod.norm("  Aromo   KETTY ") == "aromo ketty"
 
 
 def test_compare_and_csv(tmp_path):

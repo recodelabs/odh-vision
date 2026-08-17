@@ -14,10 +14,10 @@ def F(**over):
 
 
 PRIMARY = dict(record_no="304", patient_name="Aciro Rose", sex="M",
-               age_yrs="26", village="Katuru", day="15", month="3",
+               age_yrs="24", village="Katuru", day="15", month="3",
                diagnosis="PID", treatment_line1="T. O cef 2g stat",
                treatment_line2="T. O centa stat", tab_no="6",
-               full_cost="26000", balance="21000")
+               full_cost="27500", balance="22800")
 
 
 def test_is_continuation_true_for_treatment_overflow():
@@ -83,7 +83,7 @@ def test_continuation_conflict_none_when_name_matches_despite_recno_match():
 def test_classify_strips_recno_mismatch_name_match_merges_with_warning():
     records = {
         "1": {"fields": F(record_no="307", patient_name="Aciro Rose",
-                          sex="M", diagnosis="PID", full_cost="26000")},
+                          sex="M", diagnosis="PID", full_cost="27500")},
         "2": {"fields": F(record_no="3067", patient_name="Aciro Rose",
                           treatment_line1="T. X")},
     }
@@ -133,10 +133,10 @@ def test_merge_resolves_invalid_day_by_validator():
 
 
 def test_merge_flags_unresolvable_conflict():
-    prim = F(**PRIMARY)                              # full_cost 26000
+    prim = F(**PRIMARY)                              # full_cost 27500
     cont = F(full_cost="99000", treatment_line1="T. X")   # both valid, differ
     m = merge_patient([(1, prim), (2, cont)])
-    assert m["fields"]["full_cost"]["value"] == "26000"   # primary kept
+    assert m["fields"]["full_cost"]["value"] == "27500"   # primary kept
     assert m["review"] is True
     assert m["warnings"][0]["field"] == "full_cost"
 
@@ -158,4 +158,4 @@ def test_validators_shape():
     assert VALIDATORS["day"]("16") and not VALIDATORS["day"]("86")
     assert VALIDATORS["month"]("3") and not VALIDATORS["month"]("48")
     assert VALIDATORS["sex"]("F") and not VALIDATORS["sex"]("X")
-    assert VALIDATORS["full_cost"]("26000") and not VALIDATORS["full_cost"]("26k")
+    assert VALIDATORS["full_cost"]("27500") and not VALIDATORS["full_cost"]("27k")

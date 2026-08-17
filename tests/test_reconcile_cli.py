@@ -52,6 +52,31 @@ def test_cli_no_repair_review_exit2(tmp_path, capsys):
         str(tmp_path / "rec" / "gemini-3.7-flash" / "reg_p1.json"))
 
 
+def test_cli_resume_keeps_review_signal_exit2(tmp_path, capsys):
+    # Run over a review-producing fixture twice with the same output dir.
+    # The second run hits reconcile_page's resume/skip branch (existing
+    # output, no --force) — it must still count the loaded page's patient
+    # review flags into the summary tally, so it exits 2 just like the
+    # first run instead of silently reporting a clean page.
+    _page(tmp_path, "reg_p3",
+          [F(village="Bulaga", village_code="2", day="16", month="3")])
+    cli = importlib.import_module("1e_reconcile")
+    args = ["reg_p3", "--no-repair",
+            "--segments-dir", str(tmp_path / "segments"),
+            "--extractions-dir", str(tmp_path / "ex"),
+            "--out", str(tmp_path / "rec")]
+
+    rc1 = cli.main(args)
+    out1 = capsys.readouterr().out
+    assert rc1 == 2
+    assert "1 review" in out1
+
+    rc2 = cli.main(args)
+    out2 = capsys.readouterr().out
+    assert "skipped" in out2.lower()
+    assert rc2 == 2
+
+
 def test_cli_clean_page_exit0(tmp_path, capsys):
     _page(tmp_path, "reg_p2",
           [F(record_no="304", patient_name="A B", sex="M", diagnosis="X",

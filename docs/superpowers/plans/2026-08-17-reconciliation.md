@@ -55,10 +55,10 @@ def F(**over):
 
 
 PRIMARY = dict(record_no="304", patient_name="Aciro Rose", sex="M",
-               age_yrs="26", village="Katuru", day="15", month="3",
+               age_yrs="24", village="Katuru", day="15", month="3",
                diagnosis="PID", treatment_line1="T. O cef 2g stat",
                treatment_line2="T. O centa stat", tab_no="6",
-               full_cost="26000", balance="21000")
+               full_cost="27500", balance="22800")
 
 
 def test_is_continuation_true_for_treatment_overflow():
@@ -121,10 +121,10 @@ def test_merge_resolves_invalid_day_by_validator():
 
 
 def test_merge_flags_unresolvable_conflict():
-    prim = F(**PRIMARY)                              # full_cost 26000
+    prim = F(**PRIMARY)                              # full_cost 27500
     cont = F(full_cost="99000", treatment_line1="T. X")   # both valid, differ
     m = merge_patient([(1, prim), (2, cont)])
-    assert m["fields"]["full_cost"]["value"] == "26000"   # primary kept
+    assert m["fields"]["full_cost"]["value"] == "27500"   # primary kept
     assert m["review"] is True
     assert m["warnings"][0]["field"] == "full_cost"
 
@@ -133,7 +133,7 @@ def test_validators_shape():
     assert VALIDATORS["day"]("16") and not VALIDATORS["day"]("86")
     assert VALIDATORS["month"]("3") and not VALIDATORS["month"]("48")
     assert VALIDATORS["sex"]("F") and not VALIDATORS["sex"]("X")
-    assert VALIDATORS["full_cost"]("26000") and not VALIDATORS["full_cost"]("26k")
+    assert VALIDATORS["full_cost"]("27500") and not VALIDATORS["full_cost"]("27k")
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -375,7 +375,7 @@ def test_clip_signature():
     clipped = F(village="Bulaga", village_code="2", day="16", month="3")
     assert has_clip_signature(clipped)          # 8/8 CLIP_FIELDS empty
     normal = F(patient_name="X", sex="M", first_time_odh="Y",
-               hh_owns_phone="Y", diagnosis="Malaria", full_cost="3500")
+               hh_owns_phone="Y", diagnosis="Malaria", full_cost="3200")
     assert not has_clip_signature(normal)       # only 2 empties
 
 
@@ -562,7 +562,7 @@ def _page(tmp_path, stem="reg_p1", status="ok", records=None,
 
 def test_reconcile_page_merges_and_writes(tmp_path):
     ex = [F(record_no="304", patient_name="Aciro Rose", sex="M",
-            diagnosis="PID", treatment_line1="T1", full_cost="26000",
+            diagnosis="PID", treatment_line1="T1", full_cost="27500",
             first_time_odh="N", hh_owns_phone="Y", hh_owns_toilet="Y",
             result_pn="P"),
           F(treatment_line1="T2", tab_no="10"),
@@ -602,7 +602,7 @@ def test_reconcile_page_repairs_with_extract_fn(tmp_path):
 
     reread = F(patient_name="Okwir Moses", sex="M", first_time_odh="Y",
                hh_owns_phone="Y", hh_owns_toilet="Y", diagnosis="Malaria",
-               full_cost="3500", village="IGNORED")
+               full_cost="3200", village="IGNORED")
 
     class Rec:
         def model_dump(self):

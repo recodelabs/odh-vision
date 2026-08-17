@@ -19,7 +19,7 @@ def test_clip_signature():
     clipped = F(village="Bulaga", village_code="2", day="16", month="3")
     assert has_clip_signature(clipped)          # 8/8 CLIP_FIELDS empty
     normal = F(patient_name="X", sex="M", first_time_odh="Y",
-               hh_owns_phone="Y", diagnosis="Malaria", full_cost="3500")
+               hh_owns_phone="Y", diagnosis="Malaria", full_cost="3200")
     assert not has_clip_signature(normal)       # only 2 empties
 
 
@@ -30,7 +30,7 @@ def test_clip_signature_checkbox_cluster_all_empty():
     # sex/first_time_odh/hh_owns_phone/hh_owns_toilet are empty — that
     # alone must trigger repair.
     row51 = F(patient_name="Moses", result_pn="P", diagnosis="malaria",
-              full_cost="3500")
+              full_cost="3200")
     assert has_clip_signature(row51)
 
 
@@ -38,7 +38,7 @@ def test_clip_signature_checkbox_cluster_partial_not_triggered():
     # Only some of the checkbox cluster is empty, and CLIP_MIN_EMPTY isn't
     # reached either — should not trigger.
     partial = F(patient_name="X", sex="M", first_time_odh="Y",
-                hh_owns_phone="Y", diagnosis="Malaria", full_cost="3500")
+                hh_owns_phone="Y", diagnosis="Malaria", full_cost="3200")
     assert not has_clip_signature(partial)      # hh_owns_toilet empty only
 
 

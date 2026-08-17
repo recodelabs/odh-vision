@@ -88,10 +88,15 @@ def main(argv=None):
         if "refused" in r:
             print(f"  {stem}: refused ({r['refused']})")
             continue
-        if r.get("skipped"):
-            print(f"  {stem}: skipped (existing; use --force)")
-            continue
         n_rev = sum(1 for pt in r["patients"] if pt["review"])
+        if r["page_checks"].get("review"):
+            n_rev += 1
+        if r.get("skipped"):
+            reviews += n_rev
+            total_patients += len(r["patients"])
+            print(f"  {stem}: skipped (existing; use --force) - "
+                  f"{len(r['patients'])} patients, {n_rev} review")
+            continue
         n_merged = sum(1 for pt in r["patients"] if pt["merged_from"])
         reviews += n_rev
         repairs += r["repair_usage"]["calls"]

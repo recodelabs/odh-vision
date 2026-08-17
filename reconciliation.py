@@ -354,7 +354,7 @@ def _patient_content(fields):
               ("full_cost", "balance", "cost_after_discount", "diagnosis"))
 
 
-def possible_split(patient_a, patient_b):
+def possible_split(patient_a, patient_b, pre_repair_b=None):
     """True if two ADJACENT already-merged patients on a page might
     actually be one patient a classification bug split in two. Never
     auto-merged — this only flags for human review (never-guess).
@@ -368,6 +368,15 @@ def possible_split(patient_a, patient_b):
       CLIP_FIELDS are non-empty — the same clip-signature shape that
       would mark it a boundary-clipped fragment rather than a genuine
       new patient, just not recognized as a continuation of patient_a.
+
+    *pre_repair_b*, when given, is a {"checkbox_empty": bool,
+    "clip_populated": int} snapshot of patient_b's single strip taken
+    BEFORE the boundary-repair pass ran. Boundary repair can fill exactly
+    the checkbox-cluster/CLIP_FIELDS this shape check inspects (both are
+    in REPAIRABLE_FIELDS), which would silently mask a genuine split by
+    making a repaired fragment look complete. When provided, the shape
+    check uses the pre-repair snapshot instead of patient_b's (possibly
+    repaired) live fields, so repair can never suppress this flag.
     """
     rn_a = _v(patient_a["fields"], "record_no")
     rn_b = _v(patient_b["fields"], "record_no")
@@ -375,9 +384,13 @@ def possible_split(patient_a, patient_b):
         return True
     if len(patient_b["source_strips"]) == 1:
         fb = patient_b["fields"]
-        if (_patient_content(fb)
-                and all(not _v(fb, f) for f in CHECKBOX_CLUSTER_FIELDS)
-                and sum(1 for f in CLIP_FIELDS if _v(fb, f)) <= 2):
+        if pre_repair_b is not None:
+            checkbox_empty = pre_repair_b["checkbox_empty"]
+            clip_populated = pre_repair_b["clip_populated"]
+        else:
+            checkbox_empty = all(not _v(fb, f) for f in CHECKBOX_CLUSTER_FIELDS)
+            clip_populated = sum(1 for f in CLIP_FIELDS if _v(fb, f))
+        if _patient_content(fb) and checkbox_empty and clip_populated <= 2:
             return True
     return False
 
@@ -435,6 +448,23 @@ def reconcile_page(stem, model, segments_dir=SEGMENTS_DIR,
 
     repair_usage = {"calls": 0, "input_tokens": 0, "output_tokens": 0}
     kinds = classify_strips(records)
+
+    # Pre-repair snapshot of every primary's clip/fragment shape — the
+    # boundary-repair pass below fills exactly the checkbox-cluster/
+    # CLIP_FIELDS that possible_split's branch (b) inspects (both are in
+    # REPAIRABLE_FIELDS), which would silently mask a genuine split.
+    # Snapshotting BEFORE repair mutates fields in place lets the
+    # possible-split scan evaluate the PRE-repair shape.
+    pre_repair_snapshot = {}
+    for key, kind, _reason in kinds:
+        if kind != "primary":
+            continue
+        fields = records[str(key)]["fields"]
+        pre_repair_snapshot[key] = {
+            "checkbox_empty": all(not _v(fields, f)
+                                  for f in CHECKBOX_CLUSTER_FIELDS),
+            "clip_populated": sum(1 for f in CLIP_FIELDS if _v(fields, f)),
+        }
 
     # boundary repair pass (primaries only)
     repaired_by_key = {}
@@ -495,7 +525,7 @@ def reconcile_page(stem, model, segments_dir=SEGMENTS_DIR,
                     {"reason": cont_reason, "strip": cont_key})
         merged["repaired_fields"] = rep
         merged["seq"] = seq
-        merged["record_no"] = merged["fields"]["record_no"]["value"]
+        merged["record_no"] = _v(merged["fields"], "record_no")
         patients.append(merged)
 
     # Possible-split scan: adjacent patients that might be one patient a
@@ -503,7 +533,9 @@ def reconcile_page(stem, model, segments_dir=SEGMENTS_DIR,
     # flag both sides for the human review queue instead.
     for i in range(len(patients) - 1):
         a, b = patients[i], patients[i + 1]
-        if possible_split(a, b):
+        b_key = b["source_strips"][0] if len(b["source_strips"]) == 1 else None
+        pre_b = pre_repair_snapshot.get(b_key) if b_key is not None else None
+        if possible_split(a, b, pre_repair_b=pre_b):
             a["review"] = True
             b["review"] = True
             a["warnings"].append(
@@ -516,10 +548,25 @@ def reconcile_page(stem, model, segments_dir=SEGMENTS_DIR,
     repair_usage["est_cost_usd"] = round(estimate_cost(
         model, repair_usage["input_tokens"], repair_usage["output_tokens"]), 6)
 
+    # Missing-strip detection: a manifest record index absent from the
+    # extraction means a patient was silently dropped rather than merged
+    # or reviewed. Diff manifest indices against extraction record keys
+    # and surface every gap as a page-level warning. An all-empty page
+    # (manifest non-empty but zero patients built) is the same failure
+    # mode by a different route and gets the same treatment.
+    man_indices = {r["index"] for r in manifest["records"]}
+    ex_indices = {int(k) for k in records}
+    page_warnings = [{"reason": "missing-extraction", "strip": idx}
+                     for idx in sorted(man_indices - ex_indices)]
+    if manifest["records"] and not patients:
+        page_warnings.append({"reason": "no-patients"})
+    page_checks = {"record_no_sequence": seq_status,
+                  "warnings": page_warnings, "review": bool(page_warnings)}
+
     page = {"stem": stem, "model": model,
             "reconciler_version": RECONCILER_VERSION,
             "patients": patients,
-            "page_checks": {"record_no_sequence": seq_status, "warnings": []},
+            "page_checks": page_checks,
             "repair_usage": repair_usage}
     _atomic_write(out_path, page)
     return page

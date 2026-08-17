@@ -44,7 +44,7 @@ def _page(tmp_path, stem="reg_p1", status="ok", records=None,
 
 def test_reconcile_page_merges_and_writes(tmp_path):
     ex = [F(record_no="304", patient_name="Aciro Rose", sex="M",
-            diagnosis="PID", treatment_line1="T1", full_cost="26000",
+            diagnosis="PID", treatment_line1="T1", full_cost="27500",
             first_time_odh="N", hh_owns_phone="Y", hh_owns_toilet="Y",
             result_pn="P"),
           F(treatment_line1="T2", tab_no="10"),
@@ -71,7 +71,7 @@ def test_reconcile_page_recno_mismatch_name_match_merges_no_review(tmp_path):
     # record_no ("307" vs "3067") — must merge into ONE patient with a
     # recno-mismatch-name-match warning, and review must stay False.
     ex = [F(record_no="307", patient_name="Aciro Rose", sex="M",
-            diagnosis="PID", treatment_line1="T1", full_cost="26000",
+            diagnosis="PID", treatment_line1="T1", full_cost="27500",
             first_time_odh="N", hh_owns_phone="Y", hh_owns_toilet="Y",
             result_pn="P"),
           F(record_no="3067", patient_name="Aciro Rose",
@@ -122,7 +122,7 @@ def test_reconcile_page_no_possible_split_for_distinct_sequential_patients(
     # of consecutive real patients, not a misread.
     ex = [F(record_no="304", patient_name="Aciro Rose", sex="M",
             first_time_odh="N", hh_owns_phone="Y", hh_owns_toilet="Y",
-            result_pn="P", diagnosis="PID", full_cost="26000",
+            result_pn="P", diagnosis="PID", full_cost="27500",
             treatment_line1="T1"),
           F(record_no="305", patient_name="Okello Sam", sex="M",
             first_time_odh="N", hh_owns_phone="Y", hh_owns_toilet="N",
@@ -153,7 +153,7 @@ def test_reconcile_page_repairs_with_extract_fn(tmp_path):
 
     reread = F(patient_name="Okwir Moses", sex="M", first_time_odh="Y",
                hh_owns_phone="Y", hh_owns_toilet="Y", diagnosis="Malaria",
-               full_cost="3500", village="IGNORED")
+               full_cost="3200", village="IGNORED")
 
     class Rec:
         def model_dump(self):
@@ -197,3 +197,91 @@ def test_check_sequence():
     assert _check_sequence(["304", "306"]) == "gap"
     assert _check_sequence(["304", "304"]) == "duplicate"
     assert _check_sequence(["304", "abc"]) == "non-numeric"
+
+
+def test_reconcile_page_missing_extraction_flags_review(tmp_path):
+    # Manifest has 2 record slots; the extraction only has key "1" — record
+    # 2 was silently dropped somewhere upstream. That must surface as a
+    # page-level warning and force page_checks.review, not vanish quietly.
+    stem = "reg_p1"
+    seg = tmp_path / "segments" / stem
+    seg.mkdir(parents=True, exist_ok=True)
+    man_records = [{"index": 1, "y0": 100, "y1": 220,
+                    "strip": f"{stem}_rec1.png", "pad_top": 0, "pad_bottom": 0},
+                   {"index": 2, "y0": 220, "y1": 340,
+                    "strip": f"{stem}_rec2.png", "pad_top": 0, "pad_bottom": 0}]
+    (seg / f"{stem}.json").write_text(json.dumps(
+        {"stem": stem, "status": "ok", "records": man_records,
+         "header_band": [0, 100], "warnings": [], "col_x": []}))
+    cv2.imwrite(str(seg / f"{stem}_full.png"),
+               np.full((700, 1000), 200, np.uint8))
+    ex_dir = tmp_path / "ex" / "m"
+    ex_dir.mkdir(parents=True, exist_ok=True)
+    rec1 = F(record_no="304", patient_name="A", sex="M", diagnosis="X",
+             full_cost="100", first_time_odh="N", hh_owns_phone="Y",
+             hh_owns_toilet="Y", result_pn="P")
+    (ex_dir / f"{stem}.json").write_text(json.dumps(
+        {"stem": stem, "model": "m", "prompt_version": "3",
+         "records": {"1": {"fields": rec1,
+                           "usage": {"input_tokens": 1, "output_tokens": 1,
+                                    "latency_s": 0}}},
+         "totals": {}}))
+    r = reconcile_page(stem, "m", segments_dir=str(tmp_path / "segments"),
+                       extractions_dir=str(tmp_path / "ex"),
+                       out_base=str(tmp_path / "rec"))
+    assert any(w.get("reason") == "missing-extraction" and w.get("strip") == 2
+              for w in r["page_checks"]["warnings"])
+    assert r["page_checks"]["review"] is True
+
+
+def test_reconcile_page_no_patients_flags_review(tmp_path):
+    # A non-empty manifest whose sole record is entirely blank yields zero
+    # patients — that must not pass silently as a clean, empty page.
+    ex = [F()]
+    seg, exd = _page(tmp_path, extraction=ex)
+    r = reconcile_page("reg_p1", "m", segments_dir=seg, extractions_dir=exd,
+                       out_base=str(tmp_path / "rec"))
+    assert r["patients"] == []
+    assert any(w.get("reason") == "no-patients"
+              for w in r["page_checks"]["warnings"])
+    assert r["page_checks"]["review"] is True
+
+
+def test_reconcile_page_possible_split_survives_repair_masking(tmp_path):
+    # patient_b is a single-strip clip-shaped fragment (checkbox cluster
+    # empty, only patient_name populated among CLIP_FIELDS) that must be
+    # flagged possible-same-patient. Its clip signature also triggers a
+    # repair re-read that fills the checkbox cluster from REPAIRABLE_FIELDS
+    # — if possible_split evaluated the POST-repair fields, the now-filled
+    # fragment would look complete and the split would go silent. It must
+    # still be flagged, using the pre-repair snapshot.
+    ex = [F(record_no="204", patient_name="Xyz Alpha", sex="M",
+            first_time_odh="Y", hh_owns_phone="Y", hh_owns_toilet="Y",
+            result_pn="P", diagnosis="Flu", full_cost="100",
+            treatment_line1="T1"),
+          F(record_no="861", patient_name="Qrs Beta",
+            treatment_line1="T2")]
+    seg, exd = _page(tmp_path, extraction=ex)
+
+    reread = F(sex="M", first_time_odh="Y", hh_owns_phone="Y",
+               hh_owns_toilet="Y")
+
+    class Rec:
+        def model_dump(self):
+            return reread
+
+    def extract_fn(image_path, record_index, context):
+        return Rec(), {"input_tokens": 100, "output_tokens": 20,
+                       "latency_s": 1.0}
+
+    r = reconcile_page("reg_p1", "m", segments_dir=seg, extractions_dir=exd,
+                       out_base=str(tmp_path / "rec"), extract_fn=extract_fn)
+    p1, p2 = r["patients"]
+    # Repair actually fired and filled the checkbox cluster on p2 — proves
+    # this test is not vacuous: without the pre-repair-snapshot fix the
+    # live (post-repair) fields would show the cluster as populated.
+    assert set(p2["repaired_fields"]) >= {"sex", "first_time_odh"}
+    assert p2["fields"]["sex"]["value"] == "M"
+    assert p1["review"] is True and p2["review"] is True
+    assert any(w.get("reason") == "possible-same-patient"
+              for w in p2["warnings"])
