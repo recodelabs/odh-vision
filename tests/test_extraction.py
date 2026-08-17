@@ -1,9 +1,11 @@
 import json
 import os
+import time
 
 import pytest
 from pydantic import ValidationError
 
+import extraction as ex
 from extraction import (load_env, resolve_auth, Reading, RecordExtraction,
                         FIELD_NAMES, build_prompt, estimate_cost)
 
@@ -80,9 +82,6 @@ def test_estimate_cost():
 
 # ─── Per-strip extraction tests (stub client, offline) ──────────────────────────
 
-import time
-import extraction as ex
-
 
 class _Usage:
     prompt_token_count = 800
@@ -158,3 +157,34 @@ def test_extract_strip_nonretryable_raises_immediately(strip_file):
     with pytest.raises(ValueError):
         ex.extract_strip(client, "m", strip_file, 1, sleep=lambda s: None)
     assert len(client.models.calls) == 1
+
+
+def test_extract_strip_retries_on_502(strip_file):
+    """502 Bad Gateway is retryable and should eventually succeed."""
+    client = StubClient([RuntimeError("502 Bad Gateway"),
+                         _Resp(_valid_record())])
+    naps = []
+    rec, _ = ex.extract_strip(client, "m", strip_file, 1, sleep=naps.append)
+    assert isinstance(rec, RecordExtraction)
+    assert naps == [1]                         # 2**0
+
+
+def test_extract_strip_thinking_config_drop_does_not_consume_attempt(strip_file):
+    """Thinking config rejection should retry without consuming an attempt slot."""
+    client = StubClient([
+        RuntimeError("thinking_config not supported"),
+        RuntimeError("503 unavailable"),
+        RuntimeError("503 unavailable"),
+        RuntimeError("503 unavailable"),
+        _Resp(_valid_record())
+    ])
+    naps = []
+    rec, _ = ex.extract_strip(client, "m", strip_file, 1, sleep=naps.append, max_attempts=4)
+    assert isinstance(rec, RecordExtraction)
+    # Should succeed because thinking config drop doesn't consume attempt:
+    # attempt 0: thinking config rejected (no sleep, no increment)
+    # attempt 0: 503 (sleep 1, increment to 1)
+    # attempt 1: 503 (sleep 2, increment to 2)
+    # attempt 2: 503 (sleep 4, increment to 3)
+    # attempt 3: success
+    assert naps == [1, 2, 4]

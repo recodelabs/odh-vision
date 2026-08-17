@@ -192,7 +192,7 @@ def estimate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
 
 # ─── Per-strip extraction ────────────────────────────────────────────────────
 
-_RETRYABLE_MARKERS = ("429", "500", "503", "504", "RESOURCE_EXHAUSTED",
+_RETRYABLE_MARKERS = ("429", "500", "501", "502", "503", "504", "RESOURCE_EXHAUSTED",
                       "UNAVAILABLE", "DEADLINE_EXCEEDED")
 
 
@@ -218,7 +218,8 @@ def extract_strip(client, model, strip_path, record_index, context="",
             thinking_budget=thinking_budget)
 
     last_err = None
-    for attempt in range(max_attempts):
+    attempt = 0
+    while attempt < max_attempts:
         try:
             t0 = time.time()
             resp = client.models.generate_content(
@@ -246,6 +247,7 @@ def extract_strip(client, model, strip_path, record_index, context="",
             if _is_retryable(err):
                 last_err = err
                 sleep(2 ** attempt)
+                attempt += 1
                 continue
             raise
     raise RuntimeError(
