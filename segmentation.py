@@ -99,3 +99,66 @@ def clean_page(img):
     flat = flatten_illumination(best_channel(img))
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
     return clahe.apply(flat)
+
+
+def _cluster(indices, gap=6):
+    """Group consecutive pixel indices into line-center coordinates."""
+    groups = []
+    for i in indices:
+        if groups and i - groups[-1][-1] <= gap:
+            groups[-1].append(i)
+        else:
+            groups.append([i])
+    return [int(round(np.mean(g))) for g in groups]
+
+
+def _long_line_mask(gray, axis):
+    thr = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_MEAN_C,
+                                cv2.THRESH_BINARY_INV, 31, 15)
+    if axis == "h":
+        k = cv2.getStructuringElement(cv2.MORPH_RECT, (gray.shape[1] // 6, 1))
+    else:
+        k = cv2.getStructuringElement(cv2.MORPH_RECT, (1, gray.shape[0] // 6))
+    return cv2.morphologyEx(thr, cv2.MORPH_OPEN, k)
+
+
+def detect_h_lines(gray, min_frac=0.5):
+    """y-coordinates of horizontal lines spanning ≥ min_frac of the width."""
+    mask = _long_line_mask(gray, "h")
+    counts = (mask > 0).sum(axis=1)
+    return _cluster(list(np.where(counts > min_frac * gray.shape[1])[0]))
+
+
+def detect_v_lines(gray, min_frac=0.5):
+    """x-coordinates of vertical lines spanning ≥ min_frac of the height."""
+    mask = _long_line_mask(gray, "v")
+    counts = (mask > 0).sum(axis=0)
+    return _cluster(list(np.where(counts > min_frac * gray.shape[0])[0]))
+
+
+def group_records(h_lines, table_h, n_records=N_RECORDS,
+                  header_frac=HEADER_FRAC, snap_tol=SNAP_TOL):
+    """Split the table body into record blocks.
+
+    Ideal equal-split boundaries are snapped to the nearest detected line
+    within tolerance; unsnappable boundaries keep the ideal position and
+    produce a warning (the caller downgrades the page to needs_review).
+    Returns (header_bottom, [(y0, y1), ...], warnings).
+    """
+    warnings = []
+    tol = snap_tol * table_h
+
+    def snap(ideal):
+        nearest = min(h_lines, key=lambda y: abs(y - ideal)) if h_lines else None
+        if nearest is not None and abs(nearest - ideal) <= tol:
+            return int(nearest)
+        warnings.append(
+            f"no grid line within {tol:.0f}px of y={ideal:.0f}; using ideal")
+        return int(round(ideal))
+
+    header_bottom = snap(table_h * header_frac)
+    body_bottom = snap(table_h - 1)
+    bounds = np.linspace(header_bottom, body_bottom, n_records + 1)
+    ys = [header_bottom] + [snap(b) for b in bounds[1:-1]] + [body_bottom]
+    records = [(ys[i], ys[i + 1]) for i in range(n_records)]
+    return header_bottom, records, warnings
