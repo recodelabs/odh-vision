@@ -132,64 +132,86 @@ Prints a per-page summary line and a final count of `ok` vs `needs_review`. `--c
 ## Integration results (2026-08-17)
 
 Task 8 ran the full pipeline against all 23 pages of the real sample PDF
-(`20260319_053700_KAM_Stlhb.pdf`). **Final result: 0/23 pages `status: ok`, 23/23
-`needs_review`.** This is a deliberate reversion to the safe baseline after tuning
-was found to introduce a silent-failure regression — see below. Full trajectory,
-evidence, and recommended values for follow-up work are in
-`.superpowers/sdd/2026-08-17-record-segmentation/task-8-report.md`; summary:
+(`20260319_053700_KAM_Stlhb.pdf`) across two rounds.
 
-**Grid/boundary detection is fixable by constant tuning, and was verified working.**
-`HEADER_FRAC=0.13` (the shipped value) doesn't match the real printed table —
-directly measuring `detect_h_lines` output on two independently-confirmed
-correctly-oriented pages puts the true header/body boundary at `y≈248` of 1400
-(`HEADER_FRAC≈0.177`), not `y=182`. Because `group_records` anchors all other
-boundaries off the header snap, this single miscalibration cascaded into snap
-failures on nearly every boundary on every page. Correcting it (`HEADER_FRAC=0.177`,
-`SNAP_TOL=0.02→0.03`) fixed detection on both of the two known-correctly-oriented
-sample pages (p17, p23).
+**Round 1 (reverted): grid constants alone were unsafe.** Applying only
+`HEADER_FRAC=0.177` / `SNAP_TOL=0.03` (measured correct, see below) without
+fixing `ensure_upright` raised the `ok` count to 6/23, but 4 of those 6 were
+verified **upside-down despite `status: "ok"`** — the evenly-spaced 5-record
+grid snaps just as cleanly in the wrong orientation, so an accurate grid fit
+alone cannot be trusted to prove correct orientation. `ensure_upright`'s
+original heuristic (compare "small marks" ink density in the top vs. bottom
+15% of the *rectified table*) is essentially uncorrelated with true
+orientation on this document: handwriting-dense body rows routinely out-ink
+the comparatively sparse printed header, the opposite of what the heuristic
+assumed. Round 1 was reverted to the safe (0/23 ok) baseline rather than ship
+a silent-failure regression. Full round-1 trajectory and evidence are in
+`.superpowers/sdd/2026-08-17-record-segmentation/task-8-report.md`.
 
-**The blocking defect is orientation, not grid detection, and is out of scope for
-constant tuning.** `ensure_upright`'s heuristic (compare "small marks" ink density in
-the top vs. bottom 15% of the page, assuming the printed header is denser) is
-essentially uncorrelated with true orientation on this document type: real record
-rows are handwriting-dense while the printed header is comparatively sparse — the
-opposite of the synthetic test fixture's assumption (dense header, empty body rows).
-Verified directly (not inferred) on 5 pages by reconstructing the pipeline's raw
-pre-decision and post-decision images: p1 was correctly oriented raw and got
-wrongly flipped; p10 and p2 were upside-down raw and were not flipped (wrongly);
-p17 and p23 were upside-down raw and were correctly flipped. The correct-orientation
-outcome does not correlate consistently with the sign of (top ink − bottom ink)
-across these pages, so no single threshold or comparison-direction change fixes it
-without breaking the pinned synthetic unit test (which encodes the opposite density
-convention on purpose) — this needs a different orientation signal entirely
-(structural change), consistent with the brief's own anticipated "known judgment
-call" about heavy handwriting defeating the density heuristic.
+**Round 2 (this fix): replaced the orientation signal with pre-rectification
+margin ink, applied the verified grid constants, and lowered the line-detection
+threshold.** Final result: **22/23 pages `status: ok`, 1/23 `needs_review`**
+(p6 — see below), with every `ok` page individually visually confirmed
+correctly oriented (debug overlays, full resolution).
 
-**Discovered and avoided a dangerous coupling.** Applying the `HEADER_FRAC`/`SNAP_TOL`
-fix alone (without also fixing orientation) was tried and measured: it raised the
-`ok` count to 6/23, but visual inspection of all 6 "ok" pages at full resolution
-showed 4 of them (p11, p13, p15, p19) were **upside-down despite `status: "ok"`** —
-the 5-record grid is regularly spaced enough that accurate ideal boundaries snap to
-real lines even in a flipped page. This silently violates this spec's Failure
-behavior invariant ("bad segmentation must never silently feed the OCR step"). The
-unmodified baseline never has this problem, because its own header miscalibration
-causes broad snap failures regardless of orientation — an accidental safety net that
-a naive fix would have removed. **`segmentation.py` was therefore reverted to its
-original constant values** (zero diff from before Task 8); only `tests/conftest.py`
-keeps a hygiene fix (imports `HEADER_FRAC` from `segmentation` instead of
-independently hardcoding the same value, so the synthetic fixture can no longer
-silently drift out of sync with the production constant — the gap that hid this
-issue from the unit suite in the first place).
+- **Orientation signal:** `ensure_upright` (in `segmentation.py`) now takes
+  optional `orig_gray`/`quad` parameters (pre-rectification grayscale image
+  and its detected table quad; `segment_page` always supplies them). When
+  present, it compares ink density in the *page margin* immediately above vs.
+  below the table border, capped to 5% of the raw image height
+  (`MARGIN_CAP_FRAC`). The printed margin carries two distinct legends: a
+  single long "Center / Year / Village codes" line above the table, and two
+  shorter "Last care / Voucher color" lines below it. The above-table legend
+  is consistently denser than the two below-table lines, so whichever margin
+  has more ink is the true top — a signal that doesn't depend on how much a
+  given page's *body* happens to be filled in, unlike any in-table ink
+  comparison. Ground truth was established by reading all 23 raw pages
+  directly (Read tool, full resolution): p1 needed no flip, all of p2–p23
+  needed a 180° flip. This margin signal was validated against that ground
+  truth and scores **23/23** across a `MARGIN_CAP_FRAC` range of 0.025–0.06
+  (0.05 chosen, comfortably centered). Several other candidates were tried
+  and empirically rejected first: inverted in-table ink density (21/23,
+  fails on the two pages with unusually sparse last-record content),
+  small-component mean-area (20/23), and a layout-template match using
+  `group_records`' own snap-warning count (0/23 — confirms the round-1
+  finding that the regular grid fits almost identically well in both
+  orientations, so grid fit cannot itself be used as an orientation oracle).
+  The original in-table density heuristic is kept as a fallback only for
+  callers that omit `orig_gray`/`quad` (none exist in production; kept so
+  `ensure_upright(rect)` remains callable with just a rectified image).
+- **Grid constants:** `HEADER_FRAC = 0.177` and `SNAP_TOL = 0.03`, both
+  re-verified against `detect_h_lines` output on multiple confirmed-upright
+  real pages (unchanged from round 1's measurement).
+- **Line-detection threshold:** with orientation now reliable, round 1's
+  objection to lowering `min_frac` (it would convert more upside-down pages
+  into false "ok" positives) no longer applies. Direct measurement showed
+  real grid lines present in heavily-written lower rows at 30–42% width span
+  — below `detect_h_lines`' default 0.5 threshold — because handwriting and
+  checkbox marks fragment the printed line into runs shorter than the
+  long-line morphological kernel, even though the line is visibly continuous
+  to the eye. Added `H_LINE_MIN_FRAC = 0.27`, used only in `segment_page`'s
+  `detect_h_lines` call (the function's own default stays 0.5 for other
+  callers/tests). Verified empirically across all 23 pages before picking
+  0.27: values from 0.26–0.5 were swept, with ok-count rising monotonically
+  from 6/23 (at 0.5) to 23/23 (at 0.26); 0.27 (22/23) was chosen over 0.26
+  (23/23) for a small margin of safety against spurious handwriting-line
+  false positives, while still clearing the "aim 20+" bar with headroom.
+- **Residual `needs_review`:** p6 — one body sub-row boundary (`y=1146`) has
+  no detected grid line within `SNAP_TOL` in either orientation; its debug
+  overlay shows the other four boundaries snapped correctly and the record
+  boxes look visually right, but the pipeline correctly declines to mark it
+  `ok` on an unconfirmed boundary rather than assume the ideal fallback
+  position is correct. Safe, conservative behavior per the Failure behavior
+  invariant.
+- **Test changes:** `tests/conftest.py::draw_table` gained an optional
+  `margins=True` mode that draws the same above/below-table ink asymmetry the
+  production signal keys on (dense line above, sparse marks below).
+  `tests/test_rectify.py::test_ensure_upright_flips_header_to_top` now builds
+  its "upside-down" case by rotating the *raw* synthetic page 180° and
+  re-running quad-detection/rectification (matching how `segment_page` really
+  drives `ensure_upright`), rather than rotating an already-rectified image;
+  its final assertions were changed from bit-exact pixel equality (no longer
+  guaranteed once quad-detection is independently re-run on a rotated image)
+  to a density check tied to the fixture's known header-tick geometry.
 
-**Recommendation for follow-up:** implement a real orientation signal (not ink
-density) — the brief's suggested fallback, the printed page-number box, is a
-plausible candidate but note it's duplicated at both top-right and bottom-right of
-the physical page regardless of orientation, so box *position* alone won't
-disambiguate; its content/orientation would need to be read. Land that fix together
-with `HEADER_FRAC≈0.177` / `SNAP_TOL≈0.03` (both re-verified above), and add a
-synthetic test fixture with realistic (non-empty, dense) body rows so this class of
-bug is caught automatically in the future. Until then, `status: "ok"` should not be
-trusted as a sufficient orientation guarantee for this document type, which is why
-the pipeline currently ships in its maximally conservative (0 ok) state.
-
-Unit suite: `python -m pytest -v` → 16/16 passed, unchanged.
+Unit suite: `python -m pytest -v` → 16/16 passed.

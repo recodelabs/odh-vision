@@ -8,10 +8,17 @@ PAGE_W, PAGE_H = 1200, 850            # synthetic "photo" size
 TABLE = (60, 40, 1140, 810)           # left, top, right, bottom of drawn table
 N_RECORDS = 5
 
-def draw_table(n_records=N_RECORDS):
+def draw_table(n_records=N_RECORDS, margins=False):
     """Grey page with a black grid: border, dense header band, 15 body rows,
     6 column lines. Returns (image, truth) where truth holds the known
-    geometry for assertions."""
+    geometry for assertions.
+
+    If *margins* is set, also draws the pre-rectification page-margin
+    content `ensure_upright` uses to resolve 180-degree orientation on
+    real pages: a dense, wide "legend" line in the margin above the table
+    border, and a sparser, narrower one below it (mirroring the real
+    document, where the single above-table Center/Year/Village-codes line
+    is consistently denser than the two shorter below-table lines)."""
     img = np.full((PAGE_H, PAGE_W), 235, np.uint8)
     l, t, r, b = TABLE
     cv2.rectangle(img, (l, t), (r, b), 0, 3)
@@ -26,6 +33,13 @@ def draw_table(n_records=N_RECORDS):
     xs = [l + int((r - l) * fx) for fx in col_fracs]
     for x in xs:
         cv2.line(img, (x, t), (x, b), 0, 2)
+    if margins:
+        # dense "legend" line spanning nearly the full width, above the border
+        for x in range(l, r, 4):
+            cv2.line(img, (x, 5), (x, t - 5), 0, 1)
+        # sparser, narrower footer marks, below the border
+        for x in range(l, l + (r - l) // 3, 8):
+            cv2.line(img, (x, b + 15), (x, b + 25), 0, 1)
     truth = {"table": TABLE, "header_bottom": header_bottom,
              "body_ys": [int(y) for y in ys], "col_xs": xs}
     return img, truth

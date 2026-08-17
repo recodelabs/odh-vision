@@ -16,8 +16,26 @@ import numpy as np
 CANON_W, CANON_H = 2000, 1400
 N_RECORDS = 5
 SUBROWS_PER_RECORD = 3
-HEADER_FRAC = 0.13     # header band as fraction of table height
-SNAP_TOL = 0.02        # boundary snap tolerance, fraction of table height
+HEADER_FRAC = 0.177    # header band as fraction of table height (measured
+                       # from detect_h_lines on confirmed-upright real pages)
+SNAP_TOL = 0.03        # boundary snap tolerance, fraction of table height
+
+MARGIN_CAP_FRAC = 0.05  # pre-rectification margin band height, as a
+                        # fraction of the raw (post portrait-fix) image
+                        # height, used by ensure_upright's margin-ink signal
+
+H_LINE_MIN_FRAC = 0.27  # detect_h_lines threshold used in segment_page.
+                        # Lower than detect_h_lines' own default (0.5):
+                        # on real handwritten pages, printed grid lines in
+                        # heavily-written body rows get broken into many
+                        # short runs by overlapping ink and checkbox
+                        # marks, so the long-line morphological filter
+                        # keeps well under 50% of the row's width even
+                        # though the line is genuinely there. Verified on
+                        # all 23 sample pages: 0.27 recovers clean line
+                        # detection on 22/23 without introducing spurious
+                        # snaps (group_records only accepts a detected
+                        # line within SNAP_TOL of the ideal position).
 
 
 def order_corners(pts):
@@ -68,9 +86,57 @@ def _small_marks(gray):
     return cv2.subtract(thr, long_lines)
 
 
-def ensure_upright(rect_gray):
+def _band_ink(gray_band):
+    """Ink pixel count in a small margin strip (adaptive threshold)."""
+    if gray_band is None or gray_band.size == 0:
+        return 0
+    thr = cv2.adaptiveThreshold(gray_band, 255, cv2.ADAPTIVE_THRESH_MEAN_C,
+                                cv2.THRESH_BINARY_INV, 31, 15)
+    return int((thr > 0).sum())
+
+
+def _margin_ink(orig_gray, quad, cap_frac=MARGIN_CAP_FRAC):
+    """Ink density in the page margin immediately above vs. below the
+    table quad, in *pre-rectification* image coordinates.
+
+    The printed page margin carries two distinct legends: a single long
+    "Center / Year / Village codes" line above the table, and two shorter
+    "Last care / Voucher color" lines below it. The above-table legend is
+    consistently denser (it lists every village code on one line) than the
+    two below-table lines, so whichever margin has more ink is the true
+    top. Returns (top_ink, bottom_ink) in the image's own orientation.
+    """
+    h = orig_gray.shape[0]
+    top_y = int(quad[:, 1].min())
+    bot_y = int(quad[:, 1].max())
+    cap = max(1, int(h * cap_frac))
+    top_band = orig_gray[max(0, top_y - cap):top_y, :]
+    bot_band = orig_gray[bot_y:min(h, bot_y + cap), :]
+    return _band_ink(top_band), _band_ink(bot_band)
+
+
+def ensure_upright(rect_gray, orig_gray=None, quad=None):
     """The dense printed header band must sit at the top. Returns
-    (image, was_flipped)."""
+    (image, was_flipped).
+
+    Primary signal (when *orig_gray* and *quad* are supplied — the
+    pre-rectification grayscale page and its detected table quad):
+    compare printed-margin ink density immediately above vs. below the
+    table border (see `_margin_ink`). This is far more reliable than
+    in-table ink density on this document type, where handwriting-heavy
+    body rows routinely out-ink the comparatively sparse printed header,
+    defeating a naive top-vs-bottom in-table density comparison.
+
+    Fallback (when *orig_gray*/*quad* are omitted): the previous
+    small-marks in-table density heuristic, kept only so this function
+    remains callable with just a rectified image.
+    """
+    if orig_gray is not None and quad is not None:
+        top_ink, bottom_ink = _margin_ink(orig_gray, quad)
+        if bottom_ink > top_ink:
+            return cv2.rotate(rect_gray, cv2.ROTATE_180), True
+        return rect_gray, False
+
     marks = _small_marks(rect_gray)
     band = int(rect_gray.shape[0] * 0.15)
     top, bottom = int(marks[:band].sum()), int(marks[-band:].sum())
@@ -215,18 +281,19 @@ def segment_page(image_path, out_dir):
     if img.shape[0] > img.shape[1]:            # portrait → landscape
         img = cv2.rotate(img, cv2.ROTATE_90_CLOCKWISE)
 
-    quad = find_table_quad(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY))
+    orig_gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    quad = find_table_quad(orig_gray)
     if quad is None:
         manifest["warnings"].append("table border not found")
         cv2.imwrite(os.path.join(out_dir, f"{stem}_debug.jpg"), img)
         return _write_manifest(manifest, out_dir)
 
     rect_gray = clean_page(rectify_page(img, quad))
-    rect_gray, flipped = ensure_upright(rect_gray)
+    rect_gray, flipped = ensure_upright(rect_gray, orig_gray=orig_gray, quad=quad)
     if flipped:
         manifest["warnings"].append("rotated 180 (header was at bottom)")
 
-    h_lines = detect_h_lines(rect_gray)
+    h_lines = detect_h_lines(rect_gray, min_frac=H_LINE_MIN_FRAC)
     col_x = detect_v_lines(rect_gray)
     header_bottom, records, grp_warnings = group_records(h_lines, CANON_H)
     manifest["warnings"] += grp_warnings
