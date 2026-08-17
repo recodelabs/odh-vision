@@ -1,0 +1,17 @@
+# PHI-bearing source data and derived artifacts — never commit
+*.pdf
+ODHFILESCANS*
+_output/
+_segments/
+
+# Superpowers controller scratch space
+.superpowers/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# OS / editor cruft
+.DS_Store
+*.zip
