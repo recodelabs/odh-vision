@@ -88,6 +88,55 @@ def test_reconcile_page_recno_mismatch_name_match_merges_no_review(tmp_path):
     assert [t["value"] for t in p["fields"]["treatments"]] == ["T1", "T2"]
 
 
+def test_reconcile_page_possible_split_flags_both_patients(tmp_path):
+    # Two adjacent, fully-classified primaries whose record_no values are
+    # a plausible misread of each other ("307"/"3067", edit distance 1) —
+    # neither has a clip signature and their names are dissimilar enough
+    # that classify_strips never treats them as a continuation, so they
+    # land as two separate patients. possible_split must flag BOTH for
+    # review without merging them.
+    ex = [F(record_no="307", patient_name="Xyz Alpha", sex="M",
+            first_time_odh="N", hh_owns_phone="Y", hh_owns_toilet="Y",
+            result_pn="P", diagnosis="D1", full_cost="100",
+            treatment_line1="T1"),
+          F(record_no="3067", patient_name="Totally Different Person",
+            sex="F", first_time_odh="Y", hh_owns_phone="N",
+            hh_owns_toilet="N", result_pn="N", diagnosis="D2",
+            full_cost="200", treatment_line1="T2")]
+    seg, exd = _page(tmp_path, extraction=ex)
+    r = reconcile_page("reg_p1", "m", segments_dir=seg, extractions_dir=exd,
+                       out_base=str(tmp_path / "rec"))
+    assert len(r["patients"]) == 2
+    p1, p2 = r["patients"]
+    assert p1["review"] is True and p2["review"] is True
+    assert any(w.get("reason") == "possible-same-patient"
+              for w in p1["warnings"])
+    assert any(w.get("reason") == "possible-same-patient"
+              for w in p2["warnings"])
+
+
+def test_reconcile_page_no_possible_split_for_distinct_sequential_patients(
+        tmp_path):
+    # Two ordinary sequential patients (304, 305) must NOT be flagged —
+    # same-length record_nos differing by one digit is the normal shape
+    # of consecutive real patients, not a misread.
+    ex = [F(record_no="304", patient_name="Aciro Rose", sex="M",
+            first_time_odh="N", hh_owns_phone="Y", hh_owns_toilet="Y",
+            result_pn="P", diagnosis="PID", full_cost="26000",
+            treatment_line1="T1"),
+          F(record_no="305", patient_name="Okello Sam", sex="M",
+            first_time_odh="N", hh_owns_phone="Y", hh_owns_toilet="N",
+            result_pn="N", diagnosis="PUD", full_cost="28000",
+            treatment_line1="T2")]
+    seg, exd = _page(tmp_path, extraction=ex)
+    r = reconcile_page("reg_p1", "m", segments_dir=seg, extractions_dir=exd,
+                       out_base=str(tmp_path / "rec"))
+    p1, p2 = r["patients"]
+    assert p1["review"] is False and p2["review"] is False
+    assert not any(w.get("reason") == "possible-same-patient"
+                  for w in p1["warnings"] + p2["warnings"])
+
+
 def test_reconcile_page_clip_without_repair_flags_review(tmp_path):
     clipped = F(village="Bulaga", village_code="2", day="16", month="3")
     seg, exd = _page(tmp_path, extraction=[clipped])

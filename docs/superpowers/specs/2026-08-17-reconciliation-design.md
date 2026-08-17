@@ -145,3 +145,36 @@ Four controller-ruled fixes applied to `reconciliation.py`, all with extended of
 5. **Record-number continuity 304→314 "ok" across all three pages — still FAIL, all three.** p1 `page_checks.record_no_sequence = "gap"` (304, 3067, 308, 306 — 3067 breaks the run); p2 `"duplicate"` (308 appears twice: true patient 308's two strips still fail to merge because their `village` field misreads differently — "Bulago" vs "Bulaga" — and `village` is an `IDENTITY_FIELDS` blocker independent of the name/record_no fix; names match at ratio 1.0 and record_no matches exactly, but the village mismatch still blocks `is_continuation`); p3 `"gap"` (last record_no still misread as `"31"` instead of `"314"`, unchanged since it was never empty pre-repair).
 
 **Root causes for the two residual FAILs are now narrower and different in kind from the original run:** (1) one true patient (304) whose OCR misreads both record_no AND name divergently across its two strips, defeating even fuzzy name-matching; (2) one true patient (308/p2) blocked by an `IDENTITY_FIELDS` village-spelling mismatch across strips — a mechanism the four ruled fixes did not target (only record_no reliance was in scope). Both are documented, precise, and were not addressed by further un-ruled threshold changes. Reported **DONE_WITH_CONCERNS**.
+
+### Fix round 2 (2026-08-17, final)
+
+Two controller-ruled changes, directly targeting the two round-1 residual FAILs:
+
+1. **Village similarity in identity matching** — `is_continuation`'s `IDENTITY_FIELDS` loop now compares `village` with the same `difflib.SequenceMatcher` ratio ≥ `NAME_MATCH_THRESHOLD` (0.75) used for names, instead of exact norm-equality. `sex` and `age_yrs` unchanged (exact comparison).
+2. **Possible-split detection** — new pure function `possible_split(patient_a, patient_b)`, called over every adjacent pair in a page's already-merged `patients` list (after repair, before the final sequence check). Flags BOTH patients with a `"possible-same-patient"` warning and `review: true` (never auto-merged — never-guess) when either: (a) their `record_no` values are non-empty and plausibly the same misread digits — one a substring of the other, or Levenshtein distance ≤ 1 **and different string length** (equal-length single-digit-substitution pairs like "304"/"305" are deliberately excluded — that's the ordinary shape of two distinct sequential patients, not a misread); or (b) patient B is a single-strip fragment with continuation-shaped content, the whole checkbox cluster (`sex`/`first_time_odh`/`hh_owns_phone`/`hh_owns_toilet`) empty, and at most 2 of `CLIP_FIELDS` populated — the clip-signature shape of a boundary fragment that wasn't recognized as a continuation.
+
+Offline suite: 84 → 92 passing (8 new tests: village-fuzzy-match positive/negative in `test_reconcile_merge.py`; `possible_split` unit tests for both trigger branches plus a negative case in the new `tests/test_reconcile_possible_split.py`; `reconcile_page`-level wiring tests for the flag-both-patients case and the no-false-positive-on-sequential-patients case in `test_reconcile_page.py`).
+
+**Re-run of live validation** (`python 1e_reconcile.py p1 p2 p3 --center "Kameno" --year 2026 --force`, no re-extraction — extractions unchanged from round 1's v3 re-extraction): 12 patients, 2 repair re-reads, est **$0.0122** (well under the ~$0.03 budget).
+
+```
+  p1: 4 patients, 1 merged, 1 repaired, 3 review, seq=gap
+  p2: 3 patients, 2 merged, 0 repaired, 2 review, seq=ok
+  p3: 5 patients, 0 merged, 1 repaired, 2 review, seq=gap
+```
+
+**Amended acceptance bar — all PASS:**
+
+- **p1: true-304's two split fragments both flagged possible-same-patient — PASS.** `record_no 304` (seq 1) and `record_no 3067` (seq 2) both show `review: true` with a `{"reason": "possible-same-patient", "with_seq": <other>}` warning pointing at each other (trigger (b): fragment `3067`/"Adong Florence" is a single-strip clip-shaped fragment — checkbox cluster empty, only `patient_name` populated among `CLIP_FIELDS`). The split is no longer silent: it lands in the human review queue instead of being emitted as two ordinary-looking patient records.
+- **p1: 305 and 306 correct — PASS.** True patient 305 (misread record_no `308`, strips 3+4, "Okelu Sam"/"Nkello Sam") is now ONE merged record with 6 treatments (≥4) — unchanged from round 1, still correctly merged via the name-similarity fix from round 1. True patient 306 is one clean unflagged record.
+- **p2: village-spelling duplicate now merges — PASS.** True patient 308's two strips (previously blocked by `"Bulago"` vs `"Bulaga"`) now merge into one record via the village fuzzy-match (change 1): `village` ratio ≈0.92 ≥ 0.75. p2 now has **3 patients** (307, 308, 309) instead of 4, and `page_checks.record_no_sequence` is **`"ok"`** — full continuity on this page. (The merge still carries a legitimate internal `review: true` for a genuine `time_hh`/`time_mm` conflict between the two strips and the informational `village` mismatch warning — correctly surfaced, not silently resolved.)
+- **314 checkbox repairs hold — PASS.** `repaired_fields = ["first_time_odh", "sex", "hh_owns_phone", "hh_owns_toilet"]`, values `Y/M/Y/Y`, unchanged and re-verified against ground truth.
+- **304 first_voucher_use/group_appt blanks hold — PASS.** Both fragments (304, 3067) still show both fields empty.
+- **p082 ink-blot day 16 holds — PASS.** All three p2 patients (307, 308, 309) show `day = "16"`.
+- **Repair allowlist discipline holds — PASS.** Across all three pages, `repaired_fields` is `[]` or a subset of `REPAIRABLE_FIELDS` on every patient; no treatment line, `tab_no`, `balance`, or `cost_after_discount` was ever repair-filled.
+
+**Spend this round: $0.0122** (reconcile-only; no re-extraction needed). **Combined round 1 + round 2 total: $0.1105 + $0.0122 = $0.1227.**
+
+**Residual, out-of-scope-for-this-round items (unchanged from round 1, not part of the amended bar):** p1's `page_checks.record_no_sequence` is still `"gap"` (record_no `3067` breaks the numeric run — expected, since that fragment's record_no is known-wrong and the fix intentionally does NOT force a merge or renumber it, only flags it for review) and p3's is still `"gap"` (`"31"` vs true `"314"` — never empty pre-repair, so the fill-only-empty repair policy correctly never touches it); `patient_name` on the 314 repair stays `"Moses"` rather than `"Okwir Moses"` for the same fill-only-empty reason. All three are the intended, documented behavior of a never-guess design, not defects: the amended bar explicitly asks for review-queue flagging of the split rather than a forced renumber/merge, and that is what happens.
+
+**Net assessment:** Both controller-ruled changes directly resolved their targeted round-1 residuals — p2's duplicate is now a clean merge with `seq: "ok"`, and p1's silent split (the more serious failure mode, since it produced two clean-looking but wrong records with no signal) is now a loud, reviewable split instead. Reported **DONE** against the amended acceptance bar (round 2 is final for this reconciliation phase; the underlying strip-extraction OCR-quality limits on p1's record 304 and p3's record 314's record_no/name column remain, by design, a human-review-queue matter rather than something reconciliation logic should paper over).

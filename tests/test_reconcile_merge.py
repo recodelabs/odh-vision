@@ -41,6 +41,26 @@ def test_continuation_conflict_same_recno_different_name():
     assert continuation_conflict(prim, odd) == "ambiguous-continuation"
 
 
+def test_is_continuation_true_on_village_fuzzy_match():
+    # Village names are hand-lettered free text with the same near-miss
+    # OCR spelling drift as patient names — fuzzy-match (ratio >= 0.75)
+    # rather than exact norm-equality (live validation 2026-08-17, round
+    # 1: "Bulago" vs "Bulaga" blocked a genuine continuation).
+    prim = F(record_no="308", patient_name="Wandera Peter", village="Nakiro",
+             diagnosis="PUD")
+    cont = F(record_no="308", patient_name="Wandera Peter",
+             village="Nakiroo", treatment_line1="T. X")
+    assert is_continuation(prim, cont)
+
+
+def test_is_continuation_false_on_dissimilar_village():
+    prim = F(record_no="308", patient_name="Wandera Peter", village="Nakiro",
+             diagnosis="PUD")
+    cont = F(record_no="308", patient_name="Wandera Peter",
+             village="Totally Different Place", treatment_line1="T. X")
+    assert not is_continuation(prim, cont)
+
+
 def test_is_continuation_true_on_name_match_despite_recno_mismatch():
     # Margin record_no digits are proven unreliable; a fuzzy name match
     # (ratio >= 0.75) must classify as a continuation even though the

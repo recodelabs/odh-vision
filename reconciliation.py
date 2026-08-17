@@ -124,7 +124,16 @@ def is_continuation(primary_fields, cur):
             return False
     for fld in IDENTITY_FIELDS:
         a, b = _norm(_v(primary_fields, fld)), _norm(_v(cur, fld))
-        if a and b and a != b:
+        if not a or not b:
+            continue
+        if fld == "village":
+            # Village names are hand-lettered free text, prone to the same
+            # kind of near-miss OCR spelling drift as patient names (e.g.
+            # "Bulago" vs "Bulaga") — fuzzy-match rather than requiring an
+            # exact string match.
+            if _name_similarity(a, b) < NAME_MATCH_THRESHOLD:
+                return False
+        elif a != b:
             return False
     return any(_v(cur, f) for f in CONTENT_FIELDS)
 
@@ -298,6 +307,81 @@ def repair_fields(fields, rec_entry, header_bottom, full_png, tmp_dir,
     return repaired, usage
 
 
+# ─── Possible-split detection ────────────────────────────────────────────────
+
+def _edit_distance(a, b):
+    """Levenshtein distance between two strings."""
+    if a == b:
+        return 0
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i] + [0] * len(b)
+        for j, cb in enumerate(b, 1):
+            cur[j] = min(prev[j] + 1, cur[j - 1] + 1,
+                        prev[j - 1] + (ca != cb))
+        prev = cur
+    return prev[-1]
+
+
+def _recno_similar(a, b):
+    """True if two record_no strings are plausibly the same misread digits:
+    one is a substring of the other (e.g. clipped "31"/"314"), or a
+    dropped/extra digit puts them within Levenshtein distance 1 (e.g.
+    "307"/"3067"). Equal-length strings that merely differ by one digit
+    (e.g. "304"/"305") are NOT flagged here — that's the ordinary shape
+    of two genuinely different, sequential patients, not a misread; the
+    OCR failure mode this catches is a dropped/inserted/clipped digit,
+    which always changes the string length.
+    """
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    if len(a) == len(b):
+        return False
+    if a in b or b in a:
+        return True
+    return _edit_distance(a, b) <= 1
+
+
+def _patient_content(fields):
+    """CONTENT_FIELDS-equivalent check on an already-merged patient's
+    fields dict, where treatment_line1..3/tab_no have been consolidated
+    into the "treatments"/"tab_nos" lists by merge_patient."""
+    if fields.get("treatments") or fields.get("tab_nos"):
+        return True
+    return any(_v(fields, f) for f in
+              ("full_cost", "balance", "cost_after_discount", "diagnosis"))
+
+
+def possible_split(patient_a, patient_b):
+    """True if two ADJACENT already-merged patients on a page might
+    actually be one patient a classification bug split in two. Never
+    auto-merged — this only flags for human review (never-guess).
+
+    Two independent triggers:
+    - their record_no values are non-empty and plausibly the same misread
+      digits (_recno_similar: substring or edit-distance <= 1); OR
+    - patient_b is built from a single strip whose content is
+      continuation-shaped (>=1 CONTENT_FIELDS-equivalent value present)
+      AND the whole checkbox cluster is empty AND at most 2 of
+      CLIP_FIELDS are non-empty — the same clip-signature shape that
+      would mark it a boundary-clipped fragment rather than a genuine
+      new patient, just not recognized as a continuation of patient_a.
+    """
+    rn_a = _v(patient_a["fields"], "record_no")
+    rn_b = _v(patient_b["fields"], "record_no")
+    if rn_a and rn_b and _recno_similar(rn_a, rn_b):
+        return True
+    if len(patient_b["source_strips"]) == 1:
+        fb = patient_b["fields"]
+        if (_patient_content(fb)
+                and all(not _v(fb, f) for f in CHECKBOX_CLUSTER_FIELDS)
+                and sum(1 for f in CLIP_FIELDS if _v(fb, f)) <= 2):
+            return True
+    return False
+
+
 # ─── Page orchestration ──────────────────────────────────────────────────────
 
 def _check_sequence(record_nos):
@@ -413,6 +497,19 @@ def reconcile_page(stem, model, segments_dir=SEGMENTS_DIR,
         merged["seq"] = seq
         merged["record_no"] = merged["fields"]["record_no"]["value"]
         patients.append(merged)
+
+    # Possible-split scan: adjacent patients that might be one patient a
+    # classification bug split in two. Never auto-merged (never-guess) —
+    # flag both sides for the human review queue instead.
+    for i in range(len(patients) - 1):
+        a, b = patients[i], patients[i + 1]
+        if possible_split(a, b):
+            a["review"] = True
+            b["review"] = True
+            a["warnings"].append(
+                {"reason": "possible-same-patient", "with_seq": b["seq"]})
+            b["warnings"].append(
+                {"reason": "possible-same-patient", "with_seq": a["seq"]})
 
     seq_status = _check_sequence(
         [p["record_no"] for p in patients if p["record_no"]])
