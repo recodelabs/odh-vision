@@ -76,3 +76,85 @@ def test_estimate_cost():
     assert estimate_cost("gemini-3.5-flash-lite", 1_000_000, 1_000_000) == pytest.approx(1.75)
     assert estimate_cost("gemini-3.7-flash", 2_000_000, 0) == pytest.approx(1.50)
     assert estimate_cost("unknown-model", 5, 5) == 0.0
+
+
+# ─── Per-strip extraction tests (stub client, offline) ──────────────────────────
+
+import time
+import extraction as ex
+
+
+class _Usage:
+    prompt_token_count = 800
+    candidates_token_count = 500
+    thoughts_token_count = 100
+
+
+class _Resp:
+    def __init__(self, parsed):
+        self.parsed = parsed
+        self.text = parsed.model_dump_json() if parsed else "{}"
+        self.usage_metadata = _Usage()
+
+
+def _valid_record():
+    payload = {n: {"value": "", "confidence": "high"} for n in FIELD_NAMES}
+    return RecordExtraction.model_validate(payload)
+
+
+class StubModels:
+    def __init__(self, script):
+        self.script = list(script)   # each item: _Resp or Exception
+        self.calls = []
+
+    def generate_content(self, *, model, contents, config):
+        self.calls.append({"model": model, "config": config})
+        item = self.script.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+
+class StubClient:
+    def __init__(self, script):
+        self.models = StubModels(script)
+
+
+@pytest.fixture
+def strip_file(tmp_path):
+    p = tmp_path / "page_p1_rec2.png"
+    p.write_bytes(b"\x89PNG fake")
+    return str(p)
+
+
+def test_extract_strip_success(strip_file):
+    client = StubClient([_Resp(_valid_record())])
+    rec, usage = ex.extract_strip(client, "gemini-3.5-flash-lite", strip_file, 2)
+    assert isinstance(rec, RecordExtraction)
+    assert usage["input_tokens"] == 800
+    assert usage["output_tokens"] == 600      # candidates + thoughts
+    assert "latency_s" in usage
+    assert len(client.models.calls) == 1
+
+
+def test_extract_strip_retries_on_429_then_succeeds(strip_file):
+    client = StubClient([RuntimeError("429 RESOURCE_EXHAUSTED"),
+                         _Resp(_valid_record())])
+    naps = []
+    rec, _ = ex.extract_strip(client, "m", strip_file, 1, sleep=naps.append)
+    assert isinstance(rec, RecordExtraction)
+    assert naps == [1]                         # 2**0
+
+
+def test_extract_strip_gives_up_after_max_attempts(strip_file):
+    errs = [RuntimeError("503 unavailable")] * 4
+    client = StubClient(errs)
+    with pytest.raises(RuntimeError, match="failed after 4 attempts"):
+        ex.extract_strip(client, "m", strip_file, 1, sleep=lambda s: None)
+
+
+def test_extract_strip_nonretryable_raises_immediately(strip_file):
+    client = StubClient([ValueError("400 invalid argument: bad schema")])
+    with pytest.raises(ValueError):
+        ex.extract_strip(client, "m", strip_file, 1, sleep=lambda s: None)
+    assert len(client.models.calls) == 1

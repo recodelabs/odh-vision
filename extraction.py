@@ -188,3 +188,66 @@ def estimate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
         return 0.0
     in_rate, out_rate = PRICING[model]
     return (input_tokens * in_rate + output_tokens * out_rate) / 1_000_000
+
+
+# ─── Per-strip extraction ────────────────────────────────────────────────────
+
+_RETRYABLE_MARKERS = ("429", "500", "503", "504", "RESOURCE_EXHAUSTED",
+                      "UNAVAILABLE", "DEADLINE_EXCEEDED")
+
+
+def _is_retryable(err: Exception) -> bool:
+    msg = str(err)
+    return any(m in msg for m in _RETRYABLE_MARKERS)
+
+
+def extract_strip(client, model, strip_path, record_index, context="",
+                  thinking_budget=0, max_attempts=4, sleep=time.sleep):
+    """Extract one record strip. Returns (RecordExtraction, usage dict)."""
+    from google.genai import types
+
+    with open(strip_path, "rb") as f:
+        png = f.read()
+    prompt = build_prompt(record_index, context)
+
+    cfg = {"response_mime_type": "application/json",
+           "response_schema": RecordExtraction,
+           "temperature": 0.0}
+    if thinking_budget is not None:
+        cfg["thinking_config"] = types.ThinkingConfig(
+            thinking_budget=thinking_budget)
+
+    last_err = None
+    for attempt in range(max_attempts):
+        try:
+            t0 = time.time()
+            resp = client.models.generate_content(
+                model=model,
+                contents=[types.Part.from_bytes(data=png, mime_type="image/png"),
+                          prompt],
+                config=types.GenerateContentConfig(**cfg))
+            rec = resp.parsed
+            if not isinstance(rec, RecordExtraction):
+                rec = RecordExtraction.model_validate_json(resp.text)
+            u = resp.usage_metadata
+            usage = {
+                "input_tokens": getattr(u, "prompt_token_count", 0) or 0,
+                "output_tokens": (getattr(u, "candidates_token_count", 0) or 0)
+                                 + (getattr(u, "thoughts_token_count", 0) or 0),
+                "latency_s": round(time.time() - t0, 2),
+            }
+            return rec, usage
+        except Exception as err:
+            # Model may reject the thinking config — drop it once and retry.
+            if "thinking" in str(err).lower() and "thinking_config" in cfg:
+                cfg.pop("thinking_config")
+                last_err = err
+                continue
+            if _is_retryable(err):
+                last_err = err
+                sleep(2 ** attempt)
+                continue
+            raise
+    raise RuntimeError(
+        f"extract_strip({os.path.basename(strip_path)}) failed after "
+        f"{max_attempts} attempts: {last_err}")
