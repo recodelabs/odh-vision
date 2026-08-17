@@ -77,3 +77,25 @@ def ensure_upright(rect_gray):
     if bottom > top:
         return cv2.rotate(rect_gray, cv2.ROTATE_180), True
     return rect_gray, False
+
+
+def best_channel(img):
+    """Pick the color channel with the most ink/paper contrast (highest std).
+    On the blue register paper this is typically the red channel."""
+    if img.ndim == 2:
+        return img
+    return max(cv2.split(img), key=lambda c: float(c.std()))
+
+
+def flatten_illumination(gray):
+    """Divide by a median-blurred background estimate — removes shadows and
+    lighting gradients from photographed pages without touching strokes."""
+    bg = cv2.medianBlur(gray, 61)
+    return cv2.divide(gray, bg, scale=255)
+
+
+def clean_page(img):
+    """Full cleanup: channel choice → flatten → CLAHE. Grayscale out."""
+    flat = flatten_illumination(best_channel(img))
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    return clahe.apply(flat)
