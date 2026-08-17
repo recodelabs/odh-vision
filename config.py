@@ -70,6 +70,9 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 SEGMENTS_DIR = os.path.join(PROJECT_ROOT, "_segments")
 os.makedirs(SEGMENTS_DIR, exist_ok=True)
 
+EXTRACTIONS_DIR = os.path.join(PROJECT_ROOT, "_extractions")
+os.makedirs(EXTRACTIONS_DIR, exist_ok=True)
+
 
 # ─── Master-spreadsheet column headers (in column order) ─────────────────────
 HEADERS = [
