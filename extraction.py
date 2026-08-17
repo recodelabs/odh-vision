@@ -16,7 +16,7 @@ from pydantic import BaseModel, model_validator
 
 from config import PROJECT_ROOT, SEGMENTS_DIR, EXTRACTIONS_DIR
 
-PROMPT_VERSION = "1"
+PROMPT_VERSION = "2"
 DEFAULT_MODEL = "gemini-3.5-flash-lite"
 
 # USD per 1M tokens (input, output), standard tier, as of 2026-08-17.
@@ -171,6 +171,10 @@ treatment_line2, bottom → treatment_line3; leave unused lines "".
 - Costs: digits only where possible (e.g. 26000).
 - Anything anomalous (crossed-out text, merged rows, arrows, marginalia) \
 goes in row_notes.
+- The record you are transcribing lies BETWEEN the two red horizontal \
+lines. Partial rows visible above the top red line or below the bottom red \
+line belong to ADJACENT records -- never transcribe their values; use that \
+margin only to complete pen strokes that cross the line.
 {context_block}\
 Return ONLY the JSON object matching the provided schema."""
 

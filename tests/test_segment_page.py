@@ -4,7 +4,7 @@ import cv2
 import numpy as np
 from conftest import draw_table, warp_page
 import segmentation
-from segmentation import segment_page, N_RECORDS, CANON_W
+from segmentation import segment_page, N_RECORDS, CANON_W, STRIP_PAD
 
 
 def _page_on_disk(tmp_path, transform=None):
@@ -27,17 +27,52 @@ def test_segment_page_ok(tmp_path):
     # should have been detected
     assert not any("rotated 180" in w for w in m["warnings"])
     for rec in m["records"]:
-        strip = cv2.imread(os.path.join(out, rec["strip"]),
-                           cv2.IMREAD_GRAYSCALE)
+        # strips are now 3-channel (red true-boundary lines drawn on them)
+        strip = cv2.imread(os.path.join(out, rec["strip"]))
         assert strip is not None
         assert strip.shape[1] == CANON_W
-        # strip = header band + record block
-        assert strip.shape[0] == m["header_band"][1] + (rec["y1"] - rec["y0"])
+        assert strip.shape[2] == 3
+        # strip = header band + padded record block
+        assert strip.shape[0] == (m["header_band"][1]
+                                  + (rec["y1"] - rec["y0"])
+                                  + rec["pad_top"] + rec["pad_bottom"])
     assert os.path.isfile(os.path.join(out, "reg_p1_full.png"))
     assert os.path.isfile(os.path.join(out, "reg_p1_debug.jpg"))
     with open(os.path.join(out, "reg_p1.json")) as f:
         assert json.load(f)["stem"] == "reg_p1"
     assert len(m["col_x"]) >= 6
+
+
+def test_segment_page_strip_padding_and_boundary_lines(tmp_path):
+    path = _page_on_disk(tmp_path, warp_page)
+    out = str(tmp_path / "seg")
+    m = segment_page(path, out)
+    assert m["status"] == "ok"
+
+    records = m["records"]
+    # rec1's y0 == header_bottom, so its top padding is clamped to 0.
+    assert records[0]["y0"] == m["header_band"][1]
+    assert records[0]["pad_top"] == 0
+
+    # Middle records (not touching header_bottom or the page bottom) get
+    # the full pad on both sides.
+    for rec in records[1:-1]:
+        assert rec["pad_top"] == STRIP_PAD
+        assert rec["pad_bottom"] == STRIP_PAD
+
+    # Each strip carries red pixels at the rows corresponding to the true
+    # y0/y1 boundaries (BGR: blue<100, green<100, red>200).
+    header_h = m["header_band"][1]
+    for rec in records:
+        strip = cv2.imread(os.path.join(out, rec["strip"]))
+        assert strip is not None
+        line_y0 = header_h + rec["pad_top"]
+        line_y1 = header_h + rec["pad_top"] + (rec["y1"] - rec["y0"])
+        for line_y in (line_y0, line_y1):
+            row = strip[line_y]
+            red_pixels = ((row[:, 0] < 100) & (row[:, 1] < 100)
+                         & (row[:, 2] > 200))
+            assert red_pixels.sum() > 0.5 * row.shape[0]
 
 
 def test_segment_page_handles_portrait_input(tmp_path):

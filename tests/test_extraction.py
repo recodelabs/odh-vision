@@ -73,6 +73,12 @@ def test_build_prompt_mentions_layout_and_context():
     assert "Kameno" not in build_prompt(1)
 
 
+def test_build_prompt_mentions_red_boundary_lines():
+    p = build_prompt(1)
+    assert "red horizontal lines" in p.lower() or "red line" in p.lower()
+    assert "adjacent" in p.lower()
+
+
 def test_estimate_cost():
     # 1M in + 1M out at flash-lite rates = 0.25 + 1.50
     assert estimate_cost("gemini-3.5-flash-lite", 1_000_000, 1_000_000) == pytest.approx(1.75)

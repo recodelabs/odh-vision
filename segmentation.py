@@ -24,6 +24,15 @@ MARGIN_CAP_FRAC = 0.05  # pre-rectification margin band height, as a
                         # fraction of the raw (post portrait-fix) image
                         # height, used by ensure_upright's margin-ink signal
 
+STRIP_PAD = 25         # px (canonical scale) of vertical buffer added above
+                        # and below each record's true (y0, y1) bounds when
+                        # emitting its strip, so handwriting that overhangs
+                        # the printed row lines -- or a record that straddles
+                        # a crop boundary -- isn't clipped. Clamped to
+                        # [header_bottom, H]; the true boundaries are drawn
+                        # as red lines on the strip so the model (and a
+                        # human reviewer) can tell padding from the record.
+
 H_LINE_MIN_FRAC = 0.27  # detect_h_lines/detect_v_lines threshold used in
                         # segment_page for both row and column line
                         # detection. Lower than the functions' own default
@@ -235,15 +244,39 @@ def group_records(h_lines, table_h, n_records=N_RECORDS,
     return header_bottom, records, warnings
 
 
-def emit_record_strips(rect_gray, header_bottom, records, out_dir, stem):
-    """Write one PNG per record: printed header band + the record's rows."""
+def emit_record_strips(rect_gray, header_bottom, records, out_dir, stem,
+                       pad=STRIP_PAD):
+    """Write one PNG per record: printed header band + a vertically padded
+    crop of the record's rows.
+
+    Each crop extends *pad* px above y0 and below y1 (clamped to
+    [header_bottom, H]) so handwriting that overhangs the printed row
+    lines -- or a record whose ink straddles a neighboring crop boundary --
+    isn't clipped. The record's TRUE (y0, y1) boundaries are drawn as thin
+    red horizontal lines on the assembled (now color) strip, so padding is
+    visually distinguishable from the record itself.
+    """
+    H = rect_gray.shape[0]
     header = rect_gray[0:header_bottom]
     entries = []
     for i, (y0, y1) in enumerate(records, start=1):
-        strip = np.vstack([header, rect_gray[y0:y1]])
+        crop_top = max(header_bottom, y0 - pad)
+        crop_bottom = min(H, y1 + pad)
+        pad_top = y0 - crop_top
+        pad_bottom = crop_bottom - y1
+
+        strip_gray = np.vstack([header, rect_gray[crop_top:crop_bottom]])
+        strip = cv2.cvtColor(strip_gray, cv2.COLOR_GRAY2BGR)
+        w = strip.shape[1]
+        line_y0 = header.shape[0] + pad_top
+        line_y1 = header.shape[0] + pad_top + (y1 - y0)
+        cv2.line(strip, (0, line_y0), (w, line_y0), (0, 0, 255), 2)
+        cv2.line(strip, (0, line_y1), (w, line_y1), (0, 0, 255), 2)
+
         name = f"{stem}_rec{i}.png"
         cv2.imwrite(os.path.join(out_dir, name), strip)
         entries.append({"index": i, "y0": int(y0), "y1": int(y1),
+                        "pad_top": int(pad_top), "pad_bottom": int(pad_bottom),
                         "strip": name})
     return entries
 
