@@ -48,12 +48,12 @@ Pure functions, OpenCV + numpy, no workbook/Excel dependencies.
 | `find_table_quad(gray)` | Locate the table's outer border as an ordered 4-corner quad (or `None`). |
 | `order_corners(pts)` | Order 4 points as tl, tr, br, bl. |
 | `rectify_page(img, quad)` | Perspective-warp the quad to the canonical `CANON_W × CANON_H` landscape rectangle. |
-| `ensure_upright(rect_gray)` | Fix residual 180° flip: the dense printed header band must be at the top. Compares small-mark ink density (long grid lines removed) in the top vs bottom band; rotates 180° if bottom wins. |
+| `ensure_upright(rect_gray, orig_gray=None, quad=None)` | Fix residual 180° flip: the dense printed header band must be at the top. Primary signal (when `orig_gray`/`quad` are supplied): compares printed-margin ink density immediately above vs. below the table quad in the *pre-rectification* image — the page margin's above-table legend line is consistently denser than the below-table lines, so whichever margin has more ink is the true top. Falls back to the original in-table small-marks top-vs-bottom density heuristic when `orig_gray`/`quad` are omitted. Rotates 180° if the bottom signal wins. |
 | `best_channel(bgr)` | Pick the color channel with the highest ink/paper contrast (std). |
 | `flatten_illumination(gray)` | Divide by a median-blurred background estimate → removes shadows/gradients. |
 | `clean_page(bgr)` | Compose: best channel → flatten → CLAHE. Returns grayscale. |
 | `detect_h_lines(gray)` / `detect_v_lines(gray)` | Morphological long-line extraction, clustered to line center coordinates. |
-| `group_records(h_lines, header_bottom, table_bottom, n_records=5)` | Split the body into record blocks: ideal equal split, snapped to nearest detected line within tolerance; unsnapped boundaries produce warnings. |
+| `group_records(h_lines, table_h, n_records=5, header_frac=HEADER_FRAC, snap_tol=SNAP_TOL)` | Split the table body into record blocks: `header_bottom` itself is derived by snapping `table_h * header_frac` against `h_lines`, then the body is split into `n_records` ideal equal blocks, each boundary snapped to the nearest detected line within `snap_tol` of the ideal position; unsnapped boundaries keep the ideal position and produce a warning. Returns `(header_bottom, records, warnings)`. |
 | `emit_record_strips(rect_gray, header_band, records, out_dir, stem)` | Save `<stem>_rec<K>.png` strips (header band vstacked on record block). |
 | `save_debug_overlay(rect_img, grid, path)` | Rectified page with detected lines/blocks drawn. |
 | `segment_page(image_path, out_dir)` | Orchestrates all of the above; writes manifest JSON; returns the manifest dict. |
@@ -93,7 +93,15 @@ The blind `rotate(90)` in `1_render_pages.py` is removed; orientation is owned h
 ```
 
 - `status`: `"ok"` or `"needs_review"`.
-- `col_x`: detected vertical line x-coordinates on the rectified page — the contract that lets a later verification step crop any single cell from the rectified full page without this step emitting cell files.
+- `col_x`: detected vertical line x-coordinates on the rectified page,
+  intended eventually as the contract that lets a later verification step
+  crop any single cell from the rectified full page without this step
+  emitting cell files. **Best-effort only, not yet validated:** across the
+  23-sample integration run the detected count varies widely page-to-page
+  on visually identical forms (5–19 lines observed even after lowering the
+  detection threshold to `H_LINE_MIN_FRAC`), so consumers must not depend
+  on `col_x` for cell-cropping yet — it needs its own detection pass and
+  validation before it can be treated as reliable.
 
 ### Failure behavior
 

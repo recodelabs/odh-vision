@@ -33,10 +33,22 @@ def build_contact_sheet(manifests, base_dir, out_path, cols=4, thumb_w=500):
     """Tile every page's debug overlay into one JPEG, bordered green (ok)
     or red (needs_review)."""
     thumbs = []
+    placeholder_h = int(thumb_w * 0.7)
     for m in manifests:
         p = os.path.join(base_dir, m["stem"], m["stem"] + "_debug.jpg")
         img = cv2.imread(p)
         if img is None:
+            # Missing/unreadable debug overlay -- still account for this
+            # page in the QA sheet with a red-bordered placeholder tile
+            # bearing the stem, rather than silently dropping it.
+            t = np.full((placeholder_h, thumb_w, 3), 40, np.uint8)
+            cv2.rectangle(t, (0, 0), (thumb_w - 1, placeholder_h - 1),
+                          (0, 0, 255), 8)
+            cv2.putText(t, m["stem"], (12, 34),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+            cv2.putText(t, "no debug image", (12, 64),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+            thumbs.append(t)
             continue
         h = max(1, int(img.shape[0] * thumb_w / img.shape[1]))
         t = cv2.resize(img, (thumb_w, h))

@@ -24,18 +24,23 @@ MARGIN_CAP_FRAC = 0.05  # pre-rectification margin band height, as a
                         # fraction of the raw (post portrait-fix) image
                         # height, used by ensure_upright's margin-ink signal
 
-H_LINE_MIN_FRAC = 0.27  # detect_h_lines threshold used in segment_page.
-                        # Lower than detect_h_lines' own default (0.5):
-                        # on real handwritten pages, printed grid lines in
-                        # heavily-written body rows get broken into many
-                        # short runs by overlapping ink and checkbox
-                        # marks, so the long-line morphological filter
-                        # keeps well under 50% of the row's width even
-                        # though the line is genuinely there. Verified on
-                        # all 23 sample pages: 0.27 recovers clean line
-                        # detection on 22/23 without introducing spurious
-                        # snaps (group_records only accepts a detected
-                        # line within SNAP_TOL of the ideal position).
+H_LINE_MIN_FRAC = 0.27  # detect_h_lines/detect_v_lines threshold used in
+                        # segment_page for both row and column line
+                        # detection. Lower than the functions' own default
+                        # (0.5): on real handwritten pages, printed grid
+                        # lines in heavily-written body rows/columns get
+                        # broken into many short runs by overlapping ink
+                        # and checkbox marks, so the long-line morphological
+                        # filter keeps well under 50% of the row's width
+                        # (or column's height) even though the line is
+                        # genuinely there. Verified on all 23 sample pages:
+                        # 0.27 recovers clean row-line detection on 22/23
+                        # without introducing spurious snaps (group_records
+                        # only accepts a detected line within SNAP_TOL of
+                        # the ideal position). col_x detection uses the same
+                        # threshold for the same reason, but col_x itself
+                        # remains best-effort -- see the manifest schema
+                        # note in the spec.
 
 
 def order_corners(pts):
@@ -294,13 +299,17 @@ def segment_page(image_path, out_dir):
         manifest["warnings"].append("rotated 180 (header was at bottom)")
 
     h_lines = detect_h_lines(rect_gray, min_frac=H_LINE_MIN_FRAC)
-    col_x = detect_v_lines(rect_gray)
+    col_x = detect_v_lines(rect_gray, min_frac=H_LINE_MIN_FRAC)
     header_bottom, records, grp_warnings = group_records(h_lines, CANON_H)
     manifest["warnings"] += grp_warnings
     manifest["header_band"] = [0, int(header_bottom)]
     manifest["col_x"] = [int(x) for x in col_x]
 
-    if not any("using ideal" in w for w in grp_warnings):
+    non_monotonic = any(y1 <= y0 for y0, y1 in records)
+    if non_monotonic:
+        manifest["warnings"].append("non-monotonic record bounds")
+
+    if not non_monotonic and not any("using ideal" in w for w in grp_warnings):
         manifest["status"] = "ok"
         manifest["records"] = emit_record_strips(
             rect_gray, header_bottom, records, out_dir, stem)

@@ -3,11 +3,12 @@ import json
 import cv2
 import numpy as np
 from conftest import draw_table, warp_page
+import segmentation
 from segmentation import segment_page, N_RECORDS, CANON_W
 
 
 def _page_on_disk(tmp_path, transform=None):
-    img, _ = draw_table()
+    img, _ = draw_table(margins=True)
     if transform:
         img = transform(img)
     path = str(tmp_path / "reg_p1.png")
@@ -21,6 +22,10 @@ def test_segment_page_ok(tmp_path):
     m = segment_page(path, out)
     assert m["status"] == "ok"
     assert len(m["records"]) == N_RECORDS
+    # page is upright by construction (margins=True draws the true
+    # above-table legend denser than the below-table one) -- no flip
+    # should have been detected
+    assert not any("rotated 180" in w for w in m["warnings"])
     for rec in m["records"]:
         strip = cv2.imread(os.path.join(out, rec["strip"]),
                            cv2.IMREAD_GRAYSCALE)
@@ -40,6 +45,27 @@ def test_segment_page_handles_portrait_input(tmp_path):
     m = segment_page(_page_on_disk(tmp_path, rot), str(tmp_path / "seg"))
     assert m["status"] == "ok"
     assert len(m["records"]) == N_RECORDS
+
+
+def test_segment_page_needs_review_on_non_monotonic_records(tmp_path, monkeypatch):
+    # group_records is contractually expected to always return monotonic
+    # (y0 < y1) blocks, but segment_page must not trust that blindly --
+    # exercise its own gate directly by forcing a degenerate return value.
+    path = _page_on_disk(tmp_path, warp_page)
+    out = str(tmp_path / "seg")
+
+    def fake_group_records(h_lines, table_h, **kwargs):
+        header_bottom = int(table_h * segmentation.HEADER_FRAC)
+        degenerate = [(header_bottom, header_bottom)] * N_RECORDS
+        return header_bottom, degenerate, []
+
+    monkeypatch.setattr(segmentation, "group_records", fake_group_records)
+    m = segmentation.segment_page(path, out)
+
+    assert m["status"] == "needs_review"
+    assert m["records"] == []
+    assert any("non-monotonic record bounds" in w for w in m["warnings"])
+    assert not [f for f in os.listdir(out) if "_rec" in f]   # no strips
 
 
 def test_segment_page_needs_review_on_blank(tmp_path):
