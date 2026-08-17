@@ -16,7 +16,7 @@ from pydantic import BaseModel, model_validator
 
 from config import PROJECT_ROOT, SEGMENTS_DIR, EXTRACTIONS_DIR
 
-PROMPT_VERSION = "2"
+PROMPT_VERSION = "3"
 DEFAULT_MODEL = "gemini-3.5-flash-lite"
 
 # USD per 1M tokens (input, output), standard tier, as of 2026-08-17.
@@ -172,9 +172,13 @@ treatment_line2, bottom → treatment_line3; leave unused lines "".
 - Anything anomalous (crossed-out text, merged rows, arrows, marginalia) \
 goes in row_notes.
 - The record you are transcribing lies BETWEEN the two red horizontal \
-lines. Partial rows visible above the top red line or below the bottom red \
-line belong to ADJACENT records -- never transcribe their values; use that \
-margin only to complete pen strokes that cross the line.
+lines. Rows fully outside the red lines belong to ADJACENT records -- do \
+not transcribe values that clearly originate in an adjacent record's \
+cells. However, handwriting that OVERLAPS or CROSSES a red line belongs to \
+whichever record's cell it originates in: if a mark or entry starts inside \
+this record's rows (including checkbox marks and text partly covered by \
+the red line itself), transcribe it as this record's value even though it \
+extends past the line.
 {context_block}\
 Return ONLY the JSON object matching the provided schema."""
 
@@ -295,6 +299,12 @@ def extract_page(client, model, stem, segments_dir=SEGMENTS_DIR,
     if os.path.isfile(out_path):
         with open(out_path) as f:
             page = json.load(f)
+        # Re-stamp provenance so a re-extraction never carries a stale
+        # prompt_version/model from a prior run. Note: with mixed old/new
+        # records after a partial force run, the page-level stamp reflects
+        # the LATEST run only -- a documented, acceptable tradeoff.
+        page["prompt_version"] = PROMPT_VERSION
+        page["model"] = model
 
     skipped = 0
     done = 0

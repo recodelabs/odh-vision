@@ -77,6 +77,7 @@ def test_build_prompt_mentions_red_boundary_lines():
     p = build_prompt(1)
     assert "red horizontal lines" in p.lower() or "red line" in p.lower()
     assert "adjacent" in p.lower()
+    assert "overlap" in p.lower() or "originates" in p.lower()
 
 
 def test_estimate_cost():
@@ -429,3 +430,26 @@ def test_extract_page_force_with_limit_tracks_extracted_correctly(tmp_path):
     # File still has all 3 records (record 1 was refreshed, 2 and 3 from prior)
     saved2 = json.load(open(path))
     assert len(saved2["records"]) == 3
+
+
+def test_extract_page_restamps_stale_prompt_version_on_reextraction(tmp_path, monkeypatch):
+    """A re-extraction (force=True) must overwrite a stale prompt_version left
+    over from a prior run's output file, not just add new records."""
+    seg = _make_segments(tmp_path, n=3)
+    out = str(tmp_path / "ex")
+    old_version = ex.PROMPT_VERSION
+    # First extraction happens at the "old" prompt version.
+    c1 = StubClient([_Resp(_valid_record()) for _ in range(3)])
+    ex.extract_page(c1, "m", "reg_p1", segments_dir=seg, out_base=out,
+                    sleep=lambda s: None)
+    path = os.path.join(out, "m", "reg_p1.json")
+    saved1 = json.load(open(path))
+    assert saved1["prompt_version"] == old_version
+
+    # Bump the module-level prompt version and force a re-extraction.
+    monkeypatch.setattr(ex, "PROMPT_VERSION", "999-test")
+    c2 = StubClient([_Resp(_valid_record()) for _ in range(3)])
+    ex.extract_page(c2, "m", "reg_p1", segments_dir=seg, out_base=out,
+                    force=True, sleep=lambda s: None)
+    saved2 = json.load(open(path))
+    assert saved2["prompt_version"] == "999-test"
